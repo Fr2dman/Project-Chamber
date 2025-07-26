@@ -1,0 +1,7 @@
+# requirements.txt
+numpy
+gymnasium
+torch
+matplotlib
+pandas
+scipy
