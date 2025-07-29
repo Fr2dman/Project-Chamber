@@ -4,8 +4,8 @@ from typing import Tuple, Dict
 
 from simulator.components import PeltierModel, FanModel, ServoModel
 from simulator.sensors import SensorModel
-from simulator.physics import AdvancedPhysicsSimulator
-from simulator.utils import ComfortCalculator
+from simulator.physics import PhysicsSimulator
+from simulator.utils import ZoneComfortCalculator
 from configs.hvac_config import target_conditions, safety_limits
 
 
@@ -21,8 +21,8 @@ class AdvancedSmartACSimulator:
         self.dt = 5.0  # 제어 주기 (초)
 
         # 하위 시뮬레이터 구성
-        self.physics_sim = AdvancedPhysicsSimulator(num_zones)
-        self.comfort_calc = ComfortCalculator()
+        self.physics_sim = PhysicsSimulator(num_zones)
+        self.comfort_calcs = [ZoneComfortCalculator(f"ZONE_{i}") for i in range(self.num_zones)]
 
         # 하드웨어 모델 (팬, 서보, 펠티어)
         self.peltier = PeltierModel()
@@ -59,10 +59,10 @@ class AdvancedSmartACSimulator:
             self.internal_servos[i].current_angle = 30.0
             self.external_servos[i].current_angle = 40.0
             self.sensors[i].reset(
-                self.physics_sim.temperatures[i],
-                self.physics_sim.humidities[i],
-                self.physics_sim.co2_levels[i],
-                self.physics_sim.dust_levels[i]
+                self.physics_sim.T[i],
+                self.physics_sim.H[i],
+                self.physics_sim.CO2[i],
+                self.physics_sim.Dust[i]
             )
 
         self.time_step = 0
@@ -169,18 +169,15 @@ class AdvancedSmartACSimulator:
         쾌적도 계산 모듈 호출 (PMV/PPD 기반)
         - 향후 wearable 또는 카메라 기반 TSV 보정이 가능하도록 설계 고려
         """
-        scores = [
-            self.comfort_calc.calculate_comfort_score(
-                sensor_readings['temperatures'][i],
-                sensor_readings['humidities'][i],
-                air_velocity=0.1  # 팬 기반 속도 보정 가능
-            )['comfort_score']
-            for i in range(self.num_zones)
-        ]
-        return {
-            'comfort_scores': scores,
-            'average_comfort': np.mean(scores)
-        }
+        scores = []
+        for i in range(self.num_zones):
+            res = self.comfort_calcs[i].calculate_comfort(
+                temp=sensor_readings['temperatures'][i],
+                rh=sensor_readings['humidities'][i],
+                v=0.1                   # TODO: fan rpm 기반 풍속
+            )
+            scores.append(res['comfort_score'])
+        return {"comfort_scores": scores, "average_comfort": np.mean(scores)}
 
     def _calculate_reward(self, sensor_readings: Dict, comfort_data: Dict, hardware_states: Dict, action_dict: Dict) -> Tuple[float, Dict]:
         """
@@ -239,6 +236,6 @@ class AdvancedSmartACSimulator:
         state += [fan.current_rpm / 7000 for fan in self.small_fans]
         state.append(self.large_fan.current_rpm / 3300)
         state.append((self.physics_sim.ambient_temp - 15) / 20)
-        state.append(self.physics_sim.ambient_humidity / 100)
+        state.append(self.physics_sim.ambient_hum / 100)
 
         return np.array(state, dtype=np.float32)

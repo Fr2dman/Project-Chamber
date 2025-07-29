@@ -156,3 +156,17 @@ class PhysicsSimulator:
         self.Dust = np.clip(self.Dust, 0, 100)
 
         return self.get_current_state()
+
+# sim = PhysicsSimulator()
+# print(sim.T)
+# dummy_action = {
+#     'peltier_control': -0.5,
+#     'internal_servo_angles': [40,40,40,40],
+#     'external_servo_angles': [0,40,80,20],
+#     'small_fan_pwm': [50,50,50,50],
+#     'large_fan_pwm': 0,
+# }
+# fan_states = {'small_fans':[{'rpm':3500,'power':5}]*4}
+# p_state = {0:{'power_consumption':15}}
+# state = sim.update_physics(dummy_action, p_state, fan_states)
+# print(state['temperatures'])

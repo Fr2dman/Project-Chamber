@@ -2,6 +2,9 @@ import numpy as np
 
 class BaseSensorModel:
     """센서 인터페이스 모델 - 실제 시뮬레이터용 또는 실측 대체 가능"""
+    def reset(self, actual_temp: float, actual_humidity: float, actual_co2: float, actual_dust: float):
+        raise NotImplementedError
+
     def read_temperature(self, actual_temp: float, dt: float) -> float:
         raise NotImplementedError
 
@@ -23,6 +26,13 @@ class SimpleSensorModel(BaseSensorModel):
         self.co2_filter_state = 400.0
         self.dust_filter_state = 0.0
         self.noise_std = noise_std
+
+    def reset(self, actual_temp: float, actual_humidity: float, actual_co2: float, actual_dust: float):
+        """필터 상태를 실제 값으로 초기화합니다."""
+        self.temp_filter_state = actual_temp
+        self.humidity_filter_state = actual_humidity
+        self.co2_filter_state = actual_co2
+        self.dust_filter_state = actual_dust
 
     def read_temperature(self, actual_temp: float, dt: float) -> float:
         alpha = 0.1
@@ -62,6 +72,13 @@ class PreciseSensorModel(BaseSensorModel):
         self.humidity_filter_state = 50.0
         self.co2_filter_state = 400.0
         self.dust_filter_state = 0.0
+
+    def reset(self, actual_temp: float, actual_humidity: float, actual_co2: float, actual_dust: float):
+        """필터 상태를 실제 값으로 초기화합니다."""
+        self.temp_filter_state = actual_temp
+        self.humidity_filter_state = actual_humidity
+        self.co2_filter_state = actual_co2
+        self.dust_filter_state = actual_dust
 
     def read_temperature(self, actual_temp: float, dt: float) -> float:
         tau = self.temp_response_time
