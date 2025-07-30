@@ -11,7 +11,7 @@ NUM_ZONES = 4
 # 수기로 지정하려면 여기 편집
 manual_init = {
     "use_manual": True,            # False → 랜덤 초기화
-    "temperatures": [29, 28, 30, 27],   # °C
+    "temperatures": [30, 30, 30, 30],   # °C
     "humidities":   [70, 65, 60, 55],   # %RH
     "tsv_values":   [+2, +1, +2, +1],   # Thermal Sensation Vote (-3~+3) Optional
 }
@@ -44,6 +44,7 @@ def get_zone_scores(T, H):
     ]
 initial_scores = get_zone_scores(sim.physics_sim.T, sim.physics_sim.H)
 
+
 # ==========================
 # 3. 제어 시나리오 정의
 #    - zone 0,1 강냉각·풍량↑  zone2,3 약제어
@@ -57,13 +58,13 @@ for step in range(steps):
     # peltier: 전체 냉각 강도
     action[0] = -1.0 if step < steps//2 else -0.3   # 전반 강냉각, 후반 완화
     
-    # internal servo angles (0~60deg) normalized
+    # internal servo angles (0~45deg) normalized
     action[1:5] = np.array([+1, +1, -0.5, -0.5])    # zone0,1 wide open
     
     # external servo angles (0~80deg) normalized
     action[5:9] = np.array([-1, -1, +1, +1])        # zone0,1 수평, zone2,3 수직
     
-    # small fan PWM (0~60%) normalized
+    # small fan PWM (0~80%) normalized
     action[9:13] = np.array([+1, +1, -0.5, -0.5]) 
     
     # large fan

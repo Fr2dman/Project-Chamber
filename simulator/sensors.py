@@ -118,6 +118,9 @@ class SensorModel(BaseSensorModel):
         else:
             self.impl = SimpleSensorModel()
 
+    def reset(self, actual_temp: float, actual_humidity: float, actual_co2: float, actual_dust: float):
+        return self.impl.reset(actual_temp, actual_humidity, actual_co2, actual_dust)
+
     def read_temperature(self, actual_temp: float, dt: float) -> float:
         return self.impl.read_temperature(actual_temp, dt)
 

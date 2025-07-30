@@ -9,8 +9,8 @@ import numpy as np
 from typing import Dict, List
 
 # ▣ 기본 파라미터 (문헌값 / 소형 상자 경험값) – 필요 시 YAML 로드로 대체
-C_D_DEFAULT = 0.62                      # 방출계수
-K_AREA = 2.4e-4                         # A(θ)=K_AREA*θ  (m², θ in deg)  
+C_D_DEFAULT = 0.8                      # 방출계수
+K_AREA = 2.5e-5                         # A(θ)=K_AREA*θ  (m², θ in deg)  
 UA_DEFAULT = 4.8                        # W / °C  (벽체 열손실)
 JET_SPREAD = 0.30                       # rad/m  (제트 확산 계수)
 AIR_DENSITY = 1.2                       # kg/m³
@@ -40,7 +40,12 @@ class JetModel:
     def __init__(self, num_zones: int = 4, c_d: float = C_D_DEFAULT):
         self.n = num_zones
         self.c_d = c_d
-
+        # 2×2 기준 인접 리스트
+        self.adj = {0: [1, 2],
+                    1: [0, 3],
+                    2: [0, 3],
+                    3: [1, 2]}
+        
     def get_flow_matrix(self, fan_rpms: List[float], theta_int: List[float]) -> np.ndarray:
         """fan_rpms, theta_int 길이는 num_zones.
         반환: n×n 유량행렬 [m³/s]  (대각=유입+자연혼합, off‑diag=zone간 전달)"""
@@ -49,13 +54,13 @@ class JetModel:
             area = slot_area(theta_int[i])
             v_exit = (2 * 50 / AIR_DENSITY) ** 0.5  # ΔP=50 Pa 가정 → 약 9 m/s
             volumetric = self.c_d * area * v_exit   # m³/s
-            volumetric *= (fan_rpms[i] / 7000)      # 팬 RPM 보정
+            # volumetric *= (fan_rpms[i] / 7000)      # 팬 RPM 보정 -> 하지말자
 
-            # 간단 분배: 자기 존 70% + 인접 존 두 곳 15/15% (테두리는 30%)
-            Q[i, i] += volumetric * 0.70
-            Q[i, (i+1) % self.n] += volumetric * 0.15
-            Q[i, (i-1) % self.n] += volumetric * 0.15
-
+            # 간단 분배: 자기 존 90% + 인접 존 두 곳 5%/5% (테두리는 10%)
+            Q[i, i] += volumetric * 0.90
+            for j in self.adj[i]:
+                Q[i, j] += volumetric * 0.05
+                
         # 자연혼합 (창문 없는 박스 내부 난류) – 체적 비율 0.02/s
         natural = 0.02 * BOX_VOLUME
         Q += natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)

@@ -4,7 +4,7 @@ from typing import Literal
 class PeltierModel:
     """
     Peltier 장치 모델
-    - 제어 입력: -1.0(최대 냉각) ~ +1.0(최대 가열)
+    - 제어 입력: 0(냉각 종료) ~ +1.0(최대 냉각)
     - 출력: 온도 변화율, 소비 전력
     """
     def __init__(self, mode: Literal["simple", "precise"] = "simple"):
@@ -56,6 +56,7 @@ class FanModel:
             time_constant = 1.5  # 팬의 시간 상수 (s)
             self.current_rpm += (dt / time_constant) * (target_rpm - self.current_rpm)
 
+        # 에너지 소비량
         power = (self.current_rpm / self.max_rpm) ** 2 * (10 if self.fan_type == "small" else 30)
         return {"rpm": self.current_rpm, "power": power}
 

@@ -18,7 +18,7 @@ class AdvancedSmartACSimulator:
 
     def __init__(self, num_zones: int = 4):
         self.num_zones = num_zones
-        self.dt = 5.0  # 제어 주기 (초)
+        self.dt = 15.0  # 제어 주기 (초)
 
         # 하위 시뮬레이터 구성
         self.physics_sim = PhysicsSimulator(num_zones)
@@ -27,7 +27,7 @@ class AdvancedSmartACSimulator:
         # 하드웨어 모델 (팬, 서보, 펠티어)
         self.peltier = PeltierModel()
         self.sensors = [SensorModel() for _ in range(num_zones)]
-        self.internal_servos = [ServoModel(0, 60) for _ in range(num_zones)]
+        self.internal_servos = [ServoModel(0, 45) for _ in range(num_zones)]
         self.external_servos = [ServoModel(0, 80) for _ in range(num_zones)]
         self.small_fans = [FanModel(7000, "small") for _ in range(num_zones)]
         self.large_fan = FanModel(3300, "large")
