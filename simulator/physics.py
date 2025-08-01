@@ -79,7 +79,7 @@ class ZoneEnergyBalance:
     def step(self, T: np.ndarray, H: np.ndarray, Q_flow: np.ndarray,
              Q_peltier: float, dt: float, T_amb: float, H_amb: float) -> tuple[np.ndarray, np.ndarray]:
         """T,H: (n,)  — 온도[°C], 상대습도[%]
-        Q_flow: n×n (m³/s)   Q_peltier (W, 음수=냉각)
+        Q_flow: n×n (m³/s)   Q_peltier (W, )
         단순 절대습량 모델 ⇒ H_update  (정밀 모델은 나중에 교체)"""
         n = T.size
         m_dot = Q_flow * AIR_DENSITY               # kg/s
@@ -138,7 +138,7 @@ class PhysicsSimulator:
 
     # ------------------------------------------------------------------
     def update_physics(self, action_dict: Dict, peltier_states: Dict, fan_states: Dict,
-                       dt: float = 5.0) -> Dict[str, np.ndarray]:
+                       dt: float = 15.0) -> Dict[str, np.ndarray]:
         """action_dict는 슬롯 각도·PWM 포함(환경에서 전달),
         peltier_states[0]['power_consumption'] W, fan_states['small_fans'] 리스트"""
         small_rpms = [fan['rpm'] for fan in fan_states['small_fans']]

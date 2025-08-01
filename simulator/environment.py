@@ -111,9 +111,9 @@ class AdvancedSmartACSimulator:
         action = np.clip(action, -1, 1)
         return {
             'peltier_control': action[0],
-            'internal_servo_angles': action[1:5] * 30 + 30,
+            'internal_servo_angles': action[1:5] * 22.5 + 22.5,
             'external_servo_angles': action[5:9] * 40 + 40,
-            'small_fan_pwm': (action[9:13] + 1) * 30,
+            'small_fan_pwm': (action[9:13] + 1) * 45,
             'large_fan_pwm': (action[13] + 1) * 45
         }
 
