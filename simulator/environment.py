@@ -32,6 +32,13 @@ class AdvancedSmartACSimulator:
         self.small_fans = [FanModel(7000, "small") for _ in range(num_zones)]
         self.large_fan = FanModel(3300, "large")
 
+        # 액션 스케일링을 위한 범위 정의
+        self.action_ranges = {
+            'internal_servo': (0, 45),
+            'external_servo': (0, 80),
+            'fan_pwm': (0, 90) # 예시: (action+1)*45 -> 0~90
+        }
+
         # 상태 공간 및 액션 공간
         # 상태: 4(온도) + 4(습도) + 4(CO2) + 4(미세먼지) + 4(쾌적도) + 8(서보각도) + 5(팬속도) + 2(외부조건) = 35차원
         self.state_dim = 35
@@ -109,12 +116,17 @@ class AdvancedSmartACSimulator:
         - 추후 실물 제어와 연동 시 이 파트를 MQTT 제어 명령으로 교체 가능
         """
         action = np.clip(action, -1, 1)
+
+        def _scale(val, min_val, max_val):
+            """[-1, 1] 범위를 [min_val, max_val] 범위로 스케일링"""
+            return (val + 1) / 2 * (max_val - min_val) + min_val
+
         return {
             'peltier_control': action[0],
-            'internal_servo_angles': action[1:5] * 22.5 + 22.5,
-            'external_servo_angles': action[5:9] * 40 + 40,
-            'small_fan_pwm': (action[9:13] + 1) * 45,
-            'large_fan_pwm': (action[13] + 1) * 45
+            'internal_servo_angles': _scale(action[1:5], *self.action_ranges['internal_servo']),
+            'external_servo_angles': _scale(action[5:9], *self.action_ranges['external_servo']),
+            'small_fan_pwm': _scale(action[9:13], *self.action_ranges['fan_pwm']),
+            'large_fan_pwm': _scale(action[13], *self.action_ranges['fan_pwm'])
         }
 
     def _update_hardware(self, action_dict: Dict) -> Dict:
