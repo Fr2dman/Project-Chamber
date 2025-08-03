@@ -45,6 +45,12 @@ class JetModel:
                     1: [0, 3],
                     2: [0, 3],
                     3: [1, 2]}
+
+        # 제트 모델 파라미터 (상수화하여 가독성 및 유지보수성 향상)
+        self.MAX_FAN_RPM = 7000.0      # small_fan의 최대 RPM
+        self.JET_PRESSURE_DIFF = 50.0  # Pa, 팬에 의한 기준 압력차
+        self.JET_SELF_RATIO = 0.90     # 제트 유량의 자기 존 기여 비율
+        self.NATURAL_MIX_RATE = 0.02   # s⁻¹, 자연 혼합 체적 교환율
         
     def get_flow_matrix(self, fan_rpms: List[float], theta_int: List[float]) -> np.ndarray:
         """fan_rpms, theta_int 길이는 num_zones.
@@ -52,17 +58,19 @@ class JetModel:
         Q = np.zeros((self.n, self.n))
         for i in range(self.n):
             area = slot_area(theta_int[i])
-            v_exit = (2 * 50 / AIR_DENSITY) ** 0.5  # ΔP=50 Pa 가정 → 약 9 m/s
+            # 기준 압력차에 팬 RPM 비율을 곱하여 유효 압력차 계산
+            effective_pressure = self.JET_PRESSURE_DIFF * (fan_rpms[i] / self.MAX_FAN_RPM)
+            v_exit = (2 * effective_pressure / AIR_DENSITY) ** 0.5
             volumetric = self.c_d * area * v_exit   # m³/s
-            # volumetric *= (fan_rpms[i] / 7000)      # 팬 RPM 보정 -> 하지말자
 
-            # 간단 분배: 자기 존 90% + 인접 존 두 곳 5%/5% (테두리는 10%)
-            Q[i, i] += volumetric * 0.90
+            # 분배: 자기 존에 대부분, 나머지는 인접 존으로 동적 계산
+            Q[i, i] += volumetric * self.JET_SELF_RATIO
+            adj_ratio = (1.0 - self.JET_SELF_RATIO) / len(self.adj[i])
             for j in self.adj[i]:
-                Q[i, j] += volumetric * 0.05
+                Q[i, j] += volumetric * adj_ratio
                 
         # 자연혼합 (창문 없는 박스 내부 난류) – 체적 비율 0.02/s
-        natural = 0.02 * BOX_VOLUME
+        natural = self.NATURAL_MIX_RATE * BOX_VOLUME
         Q += natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
         return Q
 
@@ -83,24 +91,26 @@ class ZoneEnergyBalance:
         단순 절대습량 모델 ⇒ H_update  (정밀 모델은 나중에 교체)"""
         n = T.size
         m_dot = Q_flow * AIR_DENSITY               # kg/s
-        M_in = m_dot.sum(axis=0)                   # 각 존으로 유입 질량유량
-        M_out = m_dot.sum(axis=1)                  # 유출
+        zone_thermal_cap = self.C / n
+        zone_air_mass = BOX_MASS_AIR / n
 
-        # 온도 변화 — 대류 + 펠티어 + 열손실
-        dT = np.zeros_like(T)
-        for i in range(n):
-            conv = (1 / (self.C / n)) * ( (m_dot[:, i] * CP_AIR * (T - T[i])).sum() )
-            wall = -self.ua * (T[i] - T_amb) / (self.C / n)
-            pelt = (Q_peltier / n) / (self.C / n)
-            dT[i] = (conv + wall + pelt)
+        # 온도 변화 (벡터화)
+        # 1. 대류: m_dot.T @ T는 각 존으로 유입되는 온도의 질량 가중합, m_dot.sum(0) * T는 유출되는 온도의 질량 가중합
+        conv_energy_rate = CP_AIR * (m_dot.T @ T - m_dot.sum(axis=0) * T)
+        # 2. 벽체 열손실
+        wall_loss_rate = -self.ua * (T - T_amb)
+        # 3. 펠티어 열량 (모든 존에 균등 분배)
+        peltier_rate = Q_peltier / n
+
+        dT = (conv_energy_rate + wall_loss_rate + peltier_rate) / zone_thermal_cap
         T_new = T + dT * dt
 
-        # 습도 변화 — 유량 기반 단순 혼합 + 외기 교환
-        dH = np.zeros_like(H)
-        for i in range(n):
-            mix = ( (m_dot[:, i] * (H - H[i])).sum() ) / (BOX_MASS_AIR / n)
-            vent = 0.001 * (H_amb - H[i])         # 미소 환기 항
-            dH[i] = mix + vent
+        # 습도 변화 (벡터화)
+        # 1. 혼합
+        mix_rate = (m_dot.T @ H - m_dot.sum(axis=0) * H) / zone_air_mass
+        # 2. 미소 환기
+        vent_rate = 0.001 * (H_amb - H)
+        dH = mix_rate + vent_rate
         H_new = np.clip(H + dH * dt, 0, 100)
         return T_new, H_new
 
