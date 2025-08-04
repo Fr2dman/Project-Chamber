@@ -9,7 +9,7 @@
 NUM_ZONES: int = 4  # 상자 존 개수 – Simulator 생성 시 동일하게 맞춰야 함
 
 # ---------------- 목표 조건 ----------------
-TARGET_TEMP_C: float = 23.0   # °C
+TARGET_TEMP_C: float = 24.0   # °C
 TARGET_RH_PCT: float = 50.0   # % RH
 COMFORT_THRESHOLD: float = 80.0  # Comfort score 목표(0–100)
 
@@ -34,9 +34,9 @@ K_AREA: float = 2.4e-4  # m² per degree (내부 슬롯 면적 계수)
 UA    : float = 4.8     # W/°C (벽체 열손실)
 
 # ---------------- 액추에이터 제약 ----------------
-SMALL_FAN_MAX_PWM   = 60.0  # %
+SMALL_FAN_MAX_PWM   = 90.0  # %
 LARGE_FAN_MAX_PWM   = 90.0  # %
-SERVO_INTERNAL_RANGE = (0, 60)
+SERVO_INTERNAL_RANGE = (0, 45)
 SERVO_EXTERNAL_RANGE = (0, 80)
 
 # ---------------- 존 레이아웃 (시계방향) --------------
@@ -44,6 +44,6 @@ SERVO_EXTERNAL_RANGE = (0, 80)
 ZONE_LAYOUT = {
     0: "front_left",
     1: "front_right",
-    2: "back_right",
-    3: "back_left",
+    2: "back_left",
+    3: "back_right",
 }
