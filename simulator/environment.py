@@ -18,7 +18,7 @@ class AdvancedSmartACSimulator:
 
     def __init__(self, num_zones: int = 4):
         self.num_zones = num_zones
-        self.dt = 15.0  # 제어 주기 (초)
+        self.dt = 30.0  # 제어 주기 (초)
 
         # 하위 시뮬레이터 구성
         self.physics_sim = PhysicsSimulator(num_zones)
@@ -75,6 +75,23 @@ class AdvancedSmartACSimulator:
         self.time_step = 0
         self.episode_start_time = time.time()
         return self._get_state_vector()
+
+    def set_initial_state(self, temperatures: list[float], humidities: list[float]):
+        """
+        수동으로 초기 온/습도 상태를 설정하고 센서 상태를 동기화합니다.
+        """
+        if len(temperatures) != self.num_zones or len(humidities) != self.num_zones:
+            raise ValueError(f"Input lists must have length {self.num_zones}")
+        
+        self.physics_sim.T = np.array(temperatures, dtype=float)
+        self.physics_sim.H = np.array(humidities, dtype=float)
+
+        # 센서 필터 상태도 물리 값에 맞춰 동기화
+        for i in range(self.num_zones):
+            self.sensors[i].reset(
+                self.physics_sim.T[i], self.physics_sim.H[i],
+                self.physics_sim.CO2[i], self.physics_sim.Dust[i]
+            )
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
         """

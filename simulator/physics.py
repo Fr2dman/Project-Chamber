@@ -158,7 +158,7 @@ class PhysicsSimulator:
         Q_matrix = self.jet.get_flow_matrix(small_rpms, theta_int)  # m³/s
 
         # 2) 펠티어 냉·열량 (음수=냉각)
-        Q_pelt = peltier_states[0]['power_consumption'] * (-1 if action_dict['peltier_control'] < 0 else 1)
+        Q_pelt = peltier_states[0]['thermal_power']
 
         # 3) 에너지·습도 수지 계산
         self.T, self.H = self.balance.step(self.T, self.H, Q_matrix, Q_pelt,

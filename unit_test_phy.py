@@ -1,23 +1,28 @@
 # unit_test_phi.py
 import numpy as np
 import matplotlib.pyplot as plt
-from simulator.physics import PhysicsSimulator          # 방금 수정한 physics.py
+from simulator.physics import PhysicsSimulator
+from simulator.components import PeltierModel # 펠티어 모델을 직접 사용하기 위해 import
 
 def run_case(theta_ext, steps=20, dt=10.0):
     sim = PhysicsSimulator()
+    peltier = PeltierModel() # 펠티어 모델 인스턴스 생성
     print(sim.T)
     traj = []
     # 고정 제어값
     action = {
-        'peltier_control': -0.5,               # 강냉각
+        'peltier_control': 1.0,                # 최대 냉각 (+1.0)
         'internal_servo_angles': [40]*4,       # 풍량 중간
         'external_servo_angles': [theta_ext]*4,
         'small_fan_pwm': [50]*4,
         'large_fan_pwm': 50
     }
     fan_states = {'small_fans':[{'rpm':3500,'power':5}]*4}
-    pelt_state = {0:{'power_consumption':15}}
     for _ in range(steps):
+        # 동적 펠티어 모델을 위해 매 스텝마다 챔버 온도를 전달하여 업데이트
+        avg_chamber_temp = np.mean(sim.T)
+        pelt_state = {0: peltier.update(
+            action['peltier_control'], avg_chamber_temp, sim.ambient_temp, dt)}
         state = sim.update_physics(action, pelt_state, fan_states, dt)
         traj.append(state['temperatures'].copy())     # (4,)
     

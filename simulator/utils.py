@@ -71,7 +71,7 @@ class ZoneComfortCalculator:
     BETA_MAX = 0.8
 
     # 허용 범위 (ISO + 약간 확장)
-    TEMP_RANGE = (-10.0, 50.0)   # °C
+    TEMP_RANGE = (10.0, 40.0)   # °C
     RH_RANGE = (1.0, 100.0)      # %
     V_RANGE = (0.0, 5.0)         # m/s
 
@@ -86,9 +86,9 @@ class ZoneComfortCalculator:
     # --------- 휴리스틱 대체 쾌적도 ---------
     @staticmethod
     def _fallback_comfort(temp: float, rh: float) -> float:
-        """온도·습도 기반 간단 점수 (0–100). 중심 목표 23 °C·50 % RH."""
+        """온도·습도 기반 간단 점수 (0–100). 중심 목표 24 °C·50 % RH."""
         # 온도 편차 penalty (1 °C당 4점)
-        temp_pen = 4.0 * abs(temp - 23.0)
+        temp_pen = 4.0 * abs(temp - 24.0)
         # RH penalty : 30–70 % 구간을 허용, 바깥은 1 %당 0.5점
         if rh < 30:
             rh_pen = 0.5 * (30 - rh)
