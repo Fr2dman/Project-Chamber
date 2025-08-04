@@ -51,7 +51,7 @@ initial_scores = get_zone_scores(initial_T, initial_H)
 # 3. 제어 시나리오 정의
 #    - zone 0,1 강냉각·풍량↑  zone2,3 약제어
 # ==========================
-steps = 10   # 10 * 30s = 5 min
+steps = 20   # 20 * 30s = 5 min
 trajectory_T, trajectory_H, trajectory_score, trajectory_T_phys = [], [], [], []
 
 for step in range(steps):
@@ -94,7 +94,6 @@ print("H: ", trajectory_H)
 print("score: ", trajectory_score)
 
 
-"""
 # ==========================
 # 4. 시각화
 # ==========================
@@ -152,4 +151,3 @@ summary = pd.DataFrame({
     "Final_Score": trajectory_score[-1]
 })
 print(summary.round(2))
-"""

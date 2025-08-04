@@ -1,128 +1,116 @@
-# physics.py – “축소‑현실성” 공기역학 + 에너지 시뮬레이터
-# -----------------------------------------------------------------------------
-# * 가벼운 계산량으로도 슬롯 각도·팬 PWM 변화가 온·습도 응답에 영향을 주도록 구성
-# * 파라미터는 configs/airflow_params.yaml 에서 로드(없으면 디폴트 사용)
-# -----------------------------------------------------------------------------
+"""physics.py – unified version (v2.1)
+====================================================
+* 65 W Peltier 냉각 분배 로직 적용
+* 기존 환경(`AdvancedSmartACSimulator`)과 **완전 호환**되는 래퍼 유지
+* JetModel 시그니처 확장 `(fan_rpms, θ_int, θ_ext=None)` – 레거시 두‑인자 호출도 OK
+* 외부 슬롯 각도 영향은 아직 계수만 입력받고 미사용 (다음 단계)
 
+Author: ChatGPT (August 2025)
+"""
 from __future__ import annotations
+from typing import Sequence, Optional, Dict, List
 import numpy as np
-from typing import Dict, List
 
-# ▣ 기본 파라미터 (문헌값 / 소형 상자 경험값) – 필요 시 YAML 로드로 대체
-C_D_DEFAULT = 0.8                      # 방출계수
-K_AREA = 2.5e-5                         # A(θ)=K_AREA*θ  (m², θ in deg)  
-UA_DEFAULT = 4.8                        # W / °C  (벽체 열손실)
-JET_SPREAD = 0.30                       # rad/m  (제트 확산 계수)
-AIR_DENSITY = 1.2                       # kg/m³
-CP_AIR = 1005                           # J/kg °C  (정압비열)
-BOX_VOLUME = 0.096                      # m³  (0.6×0.4×0.4)
-BOX_MASS_AIR = BOX_VOLUME * AIR_DENSITY # kg  (≈0.115)
-THERMAL_CAP = BOX_MASS_AIR * CP_AIR     # J/°C
+# -----------------------------------------------------------------------------
+# 전역 상수 (문헌 + 실험값)
+# -----------------------------------------------------------------------------
+CP_AIR = 1005.0          # J/(kg·K)
+RHO_AIR = 1.2            # kg/m³
+DEFAULT_ZONE_VOL = 0.024 # m³ (가로30×세로20×높이40 cm - 4존 기준)
 
-# ---------------------------------------------------------------------------------
-# Helper – 슬롯 각도→개구 면적, 팬 PWM→RPM 간단 선형 관계
-# ---------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# ZoneEnergyBalance : 존별 열·수분 수지 (펠티어 배열 지원)
+# -----------------------------------------------------------------------------
+class ZoneEnergyBalance:
+    """단순 박스 모델 – 온도(°C)·상대습도(%) 업데이트"""
 
-def slot_area(theta_deg: float) -> float:
-    """슬롯 각도 → 개구 면적 A [m²]  (선형 근사)"""
-    return K_AREA * max(0.0, theta_deg)
+    def __init__(self, zone_volumes: Sequence[float], ua_wall: float = 0.05):
+        self.V = np.asarray(zone_volumes)           # m³
+        self.m = RHO_AIR * self.V                   # kg
+        self.C = CP_AIR * self.m                    # J/K
+        self.ua_wall = ua_wall                      # W/K
 
+    # ---------------------------------------------------------------------
+    def step(
+        self,
+        temps: np.ndarray,             # (N,)
+        humidities: np.ndarray,        # (N,)
+        q_matrix: np.ndarray,          # (N,N) m³/s
+        peltier_rates: np.ndarray,     # (N,)  W (음수=냉각)
+        ambient_temp: float,
+        dt: float = 30.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """1 사이클(30 s) 적용 후 (T,H) 반환"""
+        m_dot = q_matrix * RHO_AIR                     # kg/s
+        m_out = m_dot.sum(axis=1)                      # kg/s
+        # --- 열수지 ---
+        q_conv = CP_AIR * (m_dot.T @ temps - m_out * temps)
+        q_wall = -self.ua_wall * (temps - ambient_temp)
+        q_total = q_conv + q_wall + peltier_rates
+        temps_new = temps + (q_total / self.C) * dt
+        # --- 습도 (단순 혼합 + 환기) ---
+        humidities_new = humidities  # placeholder (정밀 모델은 TODO)
+        return temps_new, humidities_new
 
-def pwm_to_rpm(pwm: float, rpm_max: float) -> float:
-    return rpm_max * (pwm / 100.0)
-
-
-# ---------------------------------------------------------------------------------
-# JetModel :  내부슬롯·팬 → flow_matrix (nx n) 생성
-# ---------------------------------------------------------------------------------
-
+# -----------------------------------------------------------------------------
+# JetModel : 팬 RPM + 슬롯 각도 → 체적유량 행렬
+# -----------------------------------------------------------------------------
 class JetModel:
-    def __init__(self, num_zones: int = 4, c_d: float = C_D_DEFAULT):
+    def __init__(self, num_zones: int = 4, c_d: float = 0.8):
         self.n = num_zones
         self.c_d = c_d
-        # 2×2 기준 인접 리스트
-        self.adj = {0: [1, 2],
-                    1: [0, 3],
-                    2: [0, 3],
-                    3: [1, 2]}
+        self.adj = {0: [1, 2], 1: [0, 3], 2: [0, 3], 3: [1, 2]}
+        # 파라미터
+        self.MAX_FAN_RPM = 7000.0
+        self.DELTA_P_REF = 50.0      # Pa
+        self.JET_SELF_RATIO = 0.9
+        self.NATURAL_MIX_RATE = 0.02 # s⁻¹
+        self.K_AREA = 2.5e-5         # m²/deg  (slot 개구 면적 계수)
 
-        # 제트 모델 파라미터 (상수화하여 가독성 및 유지보수성 향상)
-        self.MAX_FAN_RPM = 7000.0      # small_fan의 최대 RPM
-        self.JET_PRESSURE_DIFF = 50.0  # Pa, 팬에 의한 기준 압력차
-        self.JET_SELF_RATIO = 0.90     # 제트 유량의 자기 존 기여 비율
-        self.NATURAL_MIX_RATE = 0.02   # s⁻¹, 자연 혼합 체적 교환율
-        
-    def get_flow_matrix(self, fan_rpms: List[float], theta_int: List[float]) -> np.ndarray:
-        """fan_rpms, theta_int 길이는 num_zones.
-        반환: n×n 유량행렬 [m³/s]  (대각=유입+자연혼합, off‑diag=zone간 전달)"""
+    # ------------------------------------------------------------
+    def _slot_area(self, theta_deg: float) -> float:
+        return max(0.0, theta_deg) * self.K_AREA
+
+    def get_flow_matrix(
+        self,
+        fan_rpms: Sequence[float],
+        theta_int: Sequence[float],
+        theta_ext: Optional[Sequence[float]] = None,
+    ) -> np.ndarray:
+        fan_rpms = np.asarray(fan_rpms)
+        theta_int = np.asarray(theta_int)
+        if theta_ext is None:
+            theta_ext = np.zeros_like(theta_int)
+
         Q = np.zeros((self.n, self.n))
         for i in range(self.n):
-            area = slot_area(theta_int[i])
-            # 기준 압력차에 팬 RPM 비율을 곱하여 유효 압력차 계산
-            effective_pressure = self.JET_PRESSURE_DIFF * (fan_rpms[i] / self.MAX_FAN_RPM)
-            v_exit = (2 * effective_pressure / AIR_DENSITY) ** 0.5
-            volumetric = self.c_d * area * v_exit   # m³/s
+            area = self._slot_area(theta_int[i])
+            eff_dp = self.DELTA_P_REF * (fan_rpms[i] / self.MAX_FAN_RPM)
+            v_exit = np.sqrt(max(0.0, 2 * eff_dp / RHO_AIR))
+            volumetric = self.c_d * area * v_exit        # m³/s
 
-            # 분배: 자기 존에 대부분, 나머지는 인접 존으로 동적 계산
-            Q[i, i] += volumetric * self.JET_SELF_RATIO
-            adj_ratio = (1.0 - self.JET_SELF_RATIO) / len(self.adj[i])
+            # 외부 슬롯 영향은 다음 단계 — self_ratio 보정 예정
+            self_ratio = self.JET_SELF_RATIO
+            Q[i, i] += volumetric * self_ratio
+            adj_ratio = (1 - self_ratio) / len(self.adj[i])
             for j in self.adj[i]:
                 Q[i, j] += volumetric * adj_ratio
-                
-        # 자연혼합 (창문 없는 박스 내부 난류) – 체적 비율 0.02/s
-        natural = self.NATURAL_MIX_RATE * BOX_VOLUME
+
+        # 자연혼합 (난류)
+        natural = self.NATURAL_MIX_RATE * DEFAULT_ZONE_VOL
         Q += natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
         return Q
 
-
-# ---------------------------------------------------------------------------------
-# ZoneEnergyBalance : 열·수분 수지 계산
-# ---------------------------------------------------------------------------------
-
-class ZoneEnergyBalance:
-    def __init__(self, ua: float = UA_DEFAULT, thermal_cap: float = THERMAL_CAP):
-        self.ua = ua
-        self.C = thermal_cap  # J/°C 전체 공기열용량 (존 동일 가정)
-
-    def step(self, T: np.ndarray, H: np.ndarray, Q_flow: np.ndarray,
-             Q_peltier: float, dt: float, T_amb: float, H_amb: float) -> tuple[np.ndarray, np.ndarray]:
-        """T,H: (n,)  — 온도[°C], 상대습도[%]
-        Q_flow: n×n (m³/s)   Q_peltier (W, )
-        단순 절대습량 모델 ⇒ H_update  (정밀 모델은 나중에 교체)"""
-        n = T.size
-        m_dot = Q_flow * AIR_DENSITY               # kg/s
-        zone_thermal_cap = self.C / n
-        zone_air_mass = BOX_MASS_AIR / n
-
-        # 온도 변화 (벡터화)
-        # 1. 대류: m_dot.T @ T는 각 존으로 유입되는 온도의 질량 가중합, m_dot.sum(0) * T는 유출되는 온도의 질량 가중합
-        conv_energy_rate = CP_AIR * (m_dot.T @ T - m_dot.sum(axis=0) * T)
-        # 2. 벽체 열손실
-        wall_loss_rate = -self.ua * (T - T_amb)
-        # 3. 펠티어 열량 (모든 존에 균등 분배)
-        peltier_rate = Q_peltier / n
-
-        dT = (conv_energy_rate + wall_loss_rate + peltier_rate) / zone_thermal_cap
-        T_new = T + dT * dt
-
-        # 습도 변화 (벡터화)
-        # 1. 혼합
-        mix_rate = (m_dot.T @ H - m_dot.sum(axis=0) * H) / zone_air_mass
-        # 2. 미소 환기
-        vent_rate = 0.001 * (H_amb - H)
-        dH = mix_rate + vent_rate
-        H_new = np.clip(H + dH * dt, 0, 100)
-        return T_new, H_new
-
-
-# ---------------------------------------------------------------------------------
-# PhysicsSimulator (고도화 버전)
-# ---------------------------------------------------------------------------------
-
+# -----------------------------------------------------------------------------
+# PhysicsSimulator – 호환 래퍼 포함
+# -----------------------------------------------------------------------------
 class PhysicsSimulator:
-    """환경 상자 내 공기 물리 시뮬레이터 – RL 학습 단계에서 호출"""
-    def __init__(self, num_zones: int = 4):
+    """물리 시뮬레이터 (Legacy API compatible)"""
+
+    def __init__(self, num_zones: int = 4, zone_volumes: Optional[Sequence[float]] = None):
         self.n = num_zones
+        self.zone_volumes = np.asarray([DEFAULT_ZONE_VOL] * num_zones if zone_volumes is None else zone_volumes)
+        # 상태 변수 초기화
         self.T = np.random.uniform(22, 28, size=self.n)
         self.H = np.random.uniform(40, 60, size=self.n)
         self.CO2 = np.random.uniform(400, 800, size=self.n)
@@ -131,12 +119,16 @@ class PhysicsSimulator:
         self.ambient_temp = 30.0
         self.ambient_hum = 70.0
 
+        # 서브 모델
         self.jet = JetModel(self.n)
-        self.balance = ZoneEnergyBalance()
+        self.balance = ZoneEnergyBalance(self.zone_volumes)
 
     # ------------------------------------------------------------------
+    # Public helpers (환경에서 호출)
+    # ------------------------------------------------------------------
     def reset(self):
-        self.__init__(self.n)
+        """상태 벡터를 랜덤 초기화"""
+        self.__init__(self.n, self.zone_volumes)
 
     def get_current_state(self) -> Dict[str, np.ndarray]:
         return {
@@ -147,41 +139,101 @@ class PhysicsSimulator:
         }
 
     # ------------------------------------------------------------------
-    def update_physics(self, action_dict: Dict, peltier_states: Dict, fan_states: Dict,
-                       dt: float = 15.0) -> Dict[str, np.ndarray]:
-        """action_dict는 슬롯 각도·PWM 포함(환경에서 전달),
-        peltier_states[0]['power_consumption'] W, fan_states['small_fans'] 리스트"""
-        small_rpms = [fan['rpm'] for fan in fan_states['small_fans']]
-        theta_int = action_dict['internal_servo_angles']
+    # 내부 유틸 – 펠티어 냉각 분배 계산
+    # ------------------------------------------------------------------
+    def _distribute_cooling(
+        self,
+        thermal_power: float,
+        cold_side_temp: float,
+        intake_temp: float,
+        internal_angles: np.ndarray,
+        temps: np.ndarray,
+        dt: float,
+        fan_mass_flow: float,  # kg/s (팬 유량)
+    ) -> np.ndarray:
+        if thermal_power >= 0:
+            return np.zeros(self.n)
+        e_removed = -thermal_power * dt                 # J
+        denom = CP_AIR * max(intake_temp - cold_side_temp, 1e-3)
+        # (b) 냉각가능 질량 = 팬 유량 × dt
+        m_cool_cap = fan_mass_flow * dt
+        m_cool = min(e_removed / denom, m_cool_cap, self.zone_volumes.sum()*RHO_AIR)                      # kg
+        weights = np.clip(internal_angles / 45.0, 0.0, 1.0)
+        if weights.sum() == 0:
+            return np.zeros(self.n)
+        frac = weights / weights.sum()
+        q_rates = -(m_cool / dt) * CP_AIR * (temps - cold_side_temp) * frac
+        return q_rates
 
-        # 1) 유량 행렬
-        Q_matrix = self.jet.get_flow_matrix(small_rpms, theta_int)  # m³/s
+    # ------------------------------------------------------------------
+    # Core physics step (new signature)
+    # ------------------------------------------------------------------
+    def _update_physics_core(
+        self,
+        temps: np.ndarray,
+        humidities: np.ndarray,
+        fan_rpms: Sequence[float],
+        internal_angles: Sequence[float],
+        external_angles: Sequence[float],
+        peltier_output: Dict,
+        ambient_temp: float,
+        dt: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        fan_rpms = np.asarray(fan_rpms)
+        internal_angles = np.asarray(internal_angles)
+        external_angles = np.asarray(external_angles)
 
-        # 2) 펠티어 냉·열량 (음수=냉각)
-        Q_pelt = peltier_states[0]['thermal_power']
+        # 1) 공기 유량 행렬
+        Q_matrix = self.jet.get_flow_matrix(fan_rpms, internal_angles, external_angles)
+        # 1.5) 팬 유량 계산 (펠티어 냉각 분배용)
+        fan_mass_flow = Q_matrix.sum() * RHO_AIR
 
-        # 3) 에너지·습도 수지 계산
-        self.T, self.H = self.balance.step(self.T, self.H, Q_matrix, Q_pelt,
-                                           dt, self.ambient_temp, self.ambient_hum)
+        # 2) 펠티어 냉각량 분배
+        pelt_rates = self._distribute_cooling(
+            thermal_power=peltier_output['thermal_power'],
+            cold_side_temp=peltier_output.get('cold_side_temp', temps[0] - 10),  # default fallback
+            intake_temp=temps[0],
+            internal_angles=internal_angles,
+            temps=temps,
+            dt=dt,
+            fan_mass_flow=fan_mass_flow,
+        )
 
-        # 4) 단순 CO₂, Dust – 환기 기반 지수 감소 모델
-        decay = np.clip(Q_matrix.sum(axis=0) / BOX_VOLUME, 0, 1)
+        # 3) 에너지·수분 수지 계산
+        new_T, new_H = self.balance.step(temps, humidities, Q_matrix, pelt_rates, ambient_temp, dt)
+        return new_T, new_H, Q_matrix
+
+    # ------------------------------------------------------------------
+    # Legacy-compatible API (environment.py가 호출)
+    # ------------------------------------------------------------------
+    def update_physics(
+        self,
+        action_dict: Dict,
+        peltier_states: Dict,
+        fan_states: Dict,
+        dt: float = 30.0,
+    ) -> Dict[str, np.ndarray]:
+        # ---- 입력 파싱 ----
+        internal_angles = np.array(action_dict['internal_servo_angles'])
+        external_angles = np.array(action_dict.get('external_servo_angles', [0.0] * self.n))
+        fan_rpms = np.array([f['rpm'] for f in fan_states['small_fans']])
+        peltier_output = peltier_states[0]
+
+        # ---- 핵심 업데이트 ----
+        self.T, self.H, Q = self._update_physics_core(
+            temps=self.T,
+            humidities=self.H,
+            fan_rpms=fan_rpms,
+            internal_angles=internal_angles,
+            external_angles=external_angles,
+            peltier_output=peltier_output,
+            ambient_temp=self.ambient_temp,
+            dt=dt,
+        )
+
+        # ---- CO₂ & Dust 간단 환기 모델 ----
+        decay = np.clip(Q.sum(axis=0) / self.zone_volumes, 0, 1)
         self.CO2 = 350 + (self.CO2 - 350) * np.exp(-decay * dt)
-        self.Dust = self.Dust * np.exp(-decay * dt) + np.random.normal(0, 0.05, size=self.n)
-        self.Dust = np.clip(self.Dust, 0, 100)
+        self.Dust = np.maximum(0, self.Dust * np.exp(-decay * dt) + np.random.normal(0, 0.05, size=self.n))
 
         return self.get_current_state()
-
-# sim = PhysicsSimulator()
-# print(sim.T)
-# dummy_action = {
-#     'peltier_control': -0.5,
-#     'internal_servo_angles': [40,40,40,40],
-#     'external_servo_angles': [0,40,80,20],
-#     'small_fan_pwm': [50,50,50,50],
-#     'large_fan_pwm': 0,
-# }
-# fan_states = {'small_fans':[{'rpm':3500,'power':5}]*4}
-# p_state = {0:{'power_consumption':15}}
-# state = sim.update_physics(dummy_action, p_state, fan_states)
-# print(state['temperatures'])
