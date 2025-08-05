@@ -11,7 +11,7 @@ NUM_ZONES = 4
 # 수기로 지정하려면 여기 편집
 manual_init = {
     "use_manual": True,            # False → 랜덤 초기화
-    "temperatures": [30, 30, 30, 30],   # °C
+    "temperatures": [26, 26, 26, 26],   # °C
     "humidities":   [70, 65, 60, 55],   # %RH
     "tsv_values":   [+2, +1, +2, +1],   # Thermal Sensation Vote (-3~+3) Optional
 }
@@ -55,6 +55,7 @@ steps = 20   # 20 * 30s = 5 min
 trajectory_T, trajectory_H, trajectory_score, trajectory_T_phys = [], [], [], []
 
 for step in range(steps):
+    print("steps run:", step)
     # action vector [-1,1] 길이 14
     action = np.zeros(sim.action_dim)
 
@@ -71,7 +72,7 @@ for step in range(steps):
     action[9:13] = np.array([+1, +1, -0.5, -0.5]) 
     
     # large fan
-    action[13] = 0.5
+    action[13] = 0.8
     
     state, reward, done, info = sim.step(action)
 
@@ -87,11 +88,6 @@ trajectory_T = np.array(trajectory_T)
 trajectory_T_phys = np.array(trajectory_T_phys)
 trajectory_H = np.array(trajectory_H)
 trajectory_score = np.array(trajectory_score)
-
-print("T: ", trajectory_T)
-print("T_phys: ", trajectory_T_phys)
-print("H: ", trajectory_H)
-print("score: ", trajectory_score)
 
 
 # ==========================

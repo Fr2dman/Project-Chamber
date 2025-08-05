@@ -17,7 +17,8 @@ import numpy as np
 CP_AIR = 1005.0          # J/(kg·K)
 RHO_AIR = 1.2            # kg/m³
 DEFAULT_ZONE_VOL = 0.024 # m³ (가로30×세로20×높이40 cm - 4존 기준)
-
+AMBIENT_TEMP = 30.0      # °C
+AMBIENT_HUM = 70.0       # %RH
 # -----------------------------------------------------------------------------
 # ZoneEnergyBalance : 존별 열·수분 수지 (펠티어 배열 지원)
 # -----------------------------------------------------------------------------
@@ -48,8 +49,12 @@ class ZoneEnergyBalance:
         q_wall = -self.ua_wall * (temps - ambient_temp)
         q_total = q_conv + q_wall + peltier_rates
         temps_new = temps + (q_total / self.C) * dt
+
         # --- 습도 (단순 혼합 + 환기) ---
-        humidities_new = humidities  # placeholder (정밀 모델은 TODO)
+        w_in  = humidities
+        w_out = (q_matrix.T @ humidities + (AMBIENT_HUM - humidities) * m_out) / (self.m / dt)
+        humidities_new = humidities + (w_out - w_in) * dt / (self.m / RHO_AIR)
+        humidities_new = np.clip(humidities_new, 0, 100)
         return temps_new, humidities_new
 
 # -----------------------------------------------------------------------------
@@ -65,7 +70,7 @@ class JetModel:
         self.DELTA_P_REF = 50.0      # Pa
         self.JET_SELF_RATIO = 0.9
         self.NATURAL_MIX_RATE = 0.02 # s⁻¹
-        self.K_AREA = 2.5e-5         # m²/deg  (slot 개구 면적 계수)
+        self.K_AREA = 5.3e-5         # m²/deg  (slot 개구 면적 계수)
 
     # ------------------------------------------------------------
     def _slot_area(self, theta_deg: float) -> float:
@@ -116,8 +121,8 @@ class PhysicsSimulator:
         self.CO2 = np.random.uniform(400, 800, size=self.n)
         self.Dust = np.random.uniform(0, 10, size=self.n)
 
-        self.ambient_temp = 30.0
-        self.ambient_hum = 70.0
+        self.ambient_temp = AMBIENT_TEMP
+        self.ambient_hum = AMBIENT_HUM
 
         # 서브 모델
         self.jet = JetModel(self.n)
@@ -232,7 +237,7 @@ class PhysicsSimulator:
         )
 
         # ---- CO₂ & Dust 간단 환기 모델 ----
-        decay = np.clip(Q.sum(axis=0) / self.zone_volumes, 0, 1)
+        decay = np.clip(Q.sum(axis=0) / self.zone_volumes, 0, 0.2)
         self.CO2 = 350 + (self.CO2 - 350) * np.exp(-decay * dt)
         self.Dust = np.maximum(0, self.Dust * np.exp(-decay * dt) + np.random.normal(0, 0.05, size=self.n))
 
