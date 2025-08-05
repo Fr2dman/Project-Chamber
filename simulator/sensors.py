@@ -112,7 +112,7 @@ class PreciseSensorModel(BaseSensorModel):
 
 class SensorModel(BaseSensorModel):
     """모드에 따라 정밀/간단 센서모델 전환 래퍼"""
-    def __init__(self, mode="simple"):
+    def __init__(self, mode="precise"):
         if mode == "precise":
             self.impl = PreciseSensorModel()
         else:

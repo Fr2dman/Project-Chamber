@@ -116,11 +116,18 @@ class PhysicsSimulator:
         self.n = num_zones
         self.zone_volumes = np.asarray([DEFAULT_ZONE_VOL] * num_zones if zone_volumes is None else zone_volumes)
         # 상태 변수 초기화
-        self.T = np.random.uniform(22, 28, size=self.n)
-        self.H = np.random.uniform(40, 60, size=self.n)
-        self.CO2 = np.random.uniform(400, 800, size=self.n)
-        self.Dust = np.random.uniform(0, 10, size=self.n)
+        # self.T = np.random.uniform(22, 28, size=self.n)
+        # self.H = np.random.uniform(40, 60, size=self.n)
+        # self.CO2 = np.random.uniform(400, 800, size=self.n)
+        # self.Dust = np.random.uniform(0, 10, size=self.n)
 
+        # 초기 상태 (예시)
+        self.T = np.full(self.n, 25.0)  # 초기 온도 (°C)
+        self.H = np.full(self.n, 50.0)  # 초기 습도 (%RH)
+        self.CO2 = np.full(self.n, 400.0)  # 초기 CO2 농도 (ppm)
+        self.Dust = np.full(self.n, 0.0)  # 초기 미세먼지 농도 (μg/m³)
+
+        # Ambient conditions
         self.ambient_temp = AMBIENT_TEMP
         self.ambient_hum = AMBIENT_HUM
 
