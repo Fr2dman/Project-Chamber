@@ -8,23 +8,23 @@ class PeltierModel:
     - 상태 변수: cold_side_temp (°C)
     - 출력 dict: thermal_power(W, 음수=냉각), power_consumption(W), cold_side_temp(°C)
     """
-
     # -------------------------- 상수 --------------------------
-    COLD_TEMP_MIN = -50.0           # °C, 냉각면 물리적 한계
-    MAX_HEAT_PUMPING_RATE = 65.0    # W, 데이터시트/설계치
+    COLD_TEMP_MIN = -50.0
+    MAX_HEAT_PUMPING_RATE = 65.0        # Qmax @ ΔT=0 K  (datasheet)
 
     def __init__(self, mode: Literal["simple", "precise"] = "simple"):
         self.mode = mode
 
-        # ▶ 파라미터 (튜닝 가능)
-        self.max_heat_pumping_rate = self.MAX_HEAT_PUMPING_RATE  # W
-        self.internal_resistance = 0.5     # Ω, Joule heating
-        self.thermal_conductance = 0.2     # W/K, hot↔cold leakage
-        self.heat_transfer_coeff = 1.5     # W/K, cold-side ↔ air
-        self.thermal_mass = 20.0           # J/K, cold-side lumped C
+        # ▶ 파라미터 (실측 기반 튜닝)
+        self.max_heat_pumping_rate = self.MAX_HEAT_PUMPING_RATE      # 65 W
+        self.internal_resistance = 2.1                               # Ω (datasheet 2.05~2.26)
+        self.thermal_conductance = 0.2                               # W/K (leakage)
+        self.heat_transfer_coeff = 10.0                              # W/K (공냉 핀+팬)
+        self.thermal_mass = 200.0                                    # J/K (Al 60 g + 세라믹)
+        self.tau = 60.0                                              # s 1-차 지연 상수
 
         # ▶ 상태
-        self.cold_side_temp = 25.0  # °C, 초기 실내온도와 동일 가정
+        self.cold_side_temp = 25.0
 
     # ----------------------------------------------------------
     def update(
@@ -34,32 +34,44 @@ class PeltierModel:
         ambient_temp: float,
         dt: float = 30.0,
     ) -> dict:
-        """펠티어 1 사이클(기본 30 s) 시뮬레이션
-        control ∈ [-1,1] → 냉각 intensity ∈ [0,1]
+        """
+        control ∈ [-1, 1]  →  cooling_intensity ∈ [0, 1]
         """
         # 0) 입력 클램프
         control = float(np.clip(control, -1.0, 1.0))
-        cooling_intensity = (control + 1.0) / 2.0  # 0~1
+        cooling_intensity = (control + 1.0) / 2.0      # 0=OFF, 1=MAX
 
-        # 1) Hot-side 온도(간략) : 주변보다 최대 +5 °C 상승
-        hot_side_temp = ambient_temp + 5.0 * cooling_intensity
+        # 1) Hot-side 온도 근사 : 주변대비 최대 +15 ℃(공냉)
+        hot_side_temp = ambient_temp + 15.0 * cooling_intensity
 
-        # 2) 열 흐름 계산
-        q_pumping = self.max_heat_pumping_rate * cooling_intensity                  # 제벡
-        q_joule = 0.5 * self.internal_resistance * (cooling_intensity * 10) ** 2   # 내부저항 일부 냉측
-        q_leak = self.thermal_conductance * (hot_side_temp - self.cold_side_temp)   # 누설
-        q_conv = self.heat_transfer_coeff * (chamber_temp - self.cold_side_temp)    # 냉측 ↔ 공기
+        # 2) ΔT-의존 열펌핑 (선형 근사 : Q = Qmax·(1-ΔT/ΔTmax))
+        dT = max(hot_side_temp - self.cold_side_temp, 0.0)   # K
+        Qmax = self.max_heat_pumping_rate * cooling_intensity
+        q_pumping = Qmax * (1.0 - dT / 65.0)                 # ΔTmax ≈ 65 K
+        q_pumping = np.clip(q_pumping, 0.0, Qmax)
 
-        # 3) 에너지 잔고 → 냉측 온도 업데이트
-        net_q = q_joule + q_leak + q_conv - q_pumping   # +면 가열, –면 냉각
-        self.cold_side_temp += (net_q / self.thermal_mass) * dt
-        #   ▶ 물리 한계 적용
-        if self.cold_side_temp < self.COLD_TEMP_MIN:
-            self.cold_side_temp = self.COLD_TEMP_MIN
+        # 3) 손실 열
+        i_te = 6.0 * cooling_intensity                       # A (12 V 기준 선형 근사)
+        q_joule = 0.5 * self.internal_resistance * i_te**2   # 냉측에 절반 도달
+        q_leak = self.thermal_conductance * dT
+        q_conv = self.heat_transfer_coeff * (chamber_temp - self.cold_side_temp)
 
-        # 4) 출력 (챔버 기준 열량은 –q_conv)
-        thermal_power = -q_conv                       # W (음수=냉각)
-        power_consumption = self.max_heat_pumping_rate * cooling_intensity  # 단순 소비전력 모델
+        # 4) 냉측 에너지 밸런스 (1차 지연)
+        net_q = q_joule + q_leak + q_conv - q_pumping        # +면 가열
+        dT_cold = (net_q / self.thermal_mass) * dt
+        alpha = dt / (dt + self.tau)                         # 지연 보정
+        self.cold_side_temp += dT_cold * alpha
+
+        #   ▶ 물리 한계 클램프
+        self.cold_side_temp = np.clip(
+            self.cold_side_temp,
+            self.COLD_TEMP_MIN,
+            hot_side_temp - 1e-3,                            # 냉측이 핫측보다 뜨거워지는 역전 방지
+        )
+
+        # 5) 출력
+        thermal_power = -q_conv                              # 음수 = 실내로부터 냉각
+        power_consumption = 12.0 * i_te                      # W = V·I (단순 전력)
 
         return {
             "thermal_power": thermal_power,

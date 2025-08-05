@@ -63,9 +63,9 @@ class PreciseSensorModel(BaseSensorModel):
         self.co2_accuracy_ppm = 50
         self.co2_accuracy_percent = 0.05
 
-        self.temp_response_time = 30.0
-        self.humidity_response_time = 8.0
-        self.co2_response_time = 60.0
+        self.temp_response_time = 5.0
+        self.humidity_response_time = 5.0
+        self.co2_response_time = 5.0
         self.dust_response_time = 5.0
 
         self.temp_filter_state = 25.0

@@ -11,7 +11,11 @@ HVAC 시뮬레이터 종합 테스트 코드 (v2.0)
 """
 
 import numpy as np
+# 기존의 복잡한 한글 폰트 설정 코드를 모두 제거하고 다음으로 대체:
 import matplotlib.pyplot as plt
+plt.rcParams['font.family'] = 'DejaVu Sans'
+plt.rcParams['axes.unicode_minus'] = False
+
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import pandas as pd
@@ -20,8 +24,26 @@ import time
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import platform
 import warnings
 warnings.filterwarnings('ignore')
+
+# 한글 폰트 깨짐 현상 수정을 위한 코드
+# 한글 폰트가 깨지는 현상을 해결하기 위한 설정
+try:
+    from matplotlib import font_manager, rc
+    if platform.system() == 'Windows':
+        # 윈도우의 경우, '맑은 고딕' 폰트의 경로를 직접 지정하여 더 안정적으로 설정
+        font_path = "c:/Windows/Fonts/malgun.ttf"
+        font_name = font_manager.FontProperties(fname=font_path).get_name()
+        rc('font', family=font_name)
+    elif platform.system() == 'Darwin': # macOS
+        rc('font', family='AppleGothic')
+    else: # Linux
+        rc('font', family='NanumGothic') # 나눔고딕 설치 필요
+    plt.rcParams['axes.unicode_minus'] = False # 마이너스 부호 깨짐 방지
+except Exception as e:
+    print(f"한글 폰트 설정 중 오류 발생: {e}")
 
 # 시뮬레이터 import
 try:
@@ -309,7 +331,7 @@ class HVACSimulatorTester:
                 [28.0, 27.5, 28.5, 27.0],
                 [65.0, 60.0, 70.0, 55.0],
                 no_control,
-                "제어 없음 - 베이스라인 성능"
+                "No control - baseline performance"
             ),
             'aggressive': TestScenario(
                 "Aggressive Cooling",
@@ -317,7 +339,7 @@ class HVACSimulatorTester:
                 [29.0, 28.5, 29.5, 28.0],
                 [70.0, 65.0, 75.0, 60.0],
                 aggressive_cooling,
-                "최대 성능으로 빠른 냉각"
+                "Maximum performance fast cooling"
             ),
             'gentle': TestScenario(
                 "Gentle Control",
@@ -325,7 +347,7 @@ class HVACSimulatorTester:
                 [26.0, 25.5, 26.5, 25.0],
                 [55.0, 50.0, 60.0, 45.0],
                 gentle_control,
-                "에너지 절약형 온화한 제어"
+                "Energy-Efficient Gentle Control"
             ),
             'adaptive': TestScenario(
                 "Adaptive PID Control",
@@ -333,7 +355,7 @@ class HVACSimulatorTester:
                 [29.0, 25.0, 23.0, 27.0],
                 [70.0, 40.0, 45.0, 65.0],
                 adaptive_control,
-                "PID 기반 적응형 제어"
+                "	PID-Based Adaptive Control"
             ),
             'differential': TestScenario(
                 "Zone Differential Control",
@@ -341,7 +363,7 @@ class HVACSimulatorTester:
                 [30.0, 22.0, 26.0, 24.0],
                 [75.0, 35.0, 55.0, 50.0],
                 zone_differential_control,
-                "존별 차등 제어"
+                "Zone-Differentiated Control"
             ),
             'step_response': TestScenario(
                 "Step Response Test",
@@ -349,7 +371,7 @@ class HVACSimulatorTester:
                 [25.0, 25.0, 25.0, 25.0],
                 [50.0, 50.0, 50.0, 50.0],
                 step_response_test,
-                "스텝 응답 특성 테스트"
+                "Step-Response Characterization Test"
             ),
             'energy_efficient': TestScenario(
                 "Energy Efficient Control",
@@ -357,19 +379,19 @@ class HVACSimulatorTester:
                 [27.0, 26.5, 27.5, 26.0],
                 [60.0, 55.0, 65.0, 50.0],
                 energy_efficient_control,
-                "에너지 효율성 중심 제어"
+                "Energy-Efficiency-Centric Control"
             )
         }
     
     def run_scenario(self, scenario: TestScenario, visualize: bool = True, 
                     save_data: bool = True) -> Dict:
         """시나리오 실행"""
-        print(f"\n{'='*60}")
-        print(f"시나리오 실행: {scenario.name}")
-        print(f"설명: {scenario.description}")
-        print(f"지속 시간: {scenario.duration_steps} steps ({scenario.duration_steps * 0.5:.1f} 분)")
-        print(f"초기 온도: {scenario.initial_temps}")
-        print(f"초기 습도: {scenario.initial_humidity}")
+        print(f"{'='*60}")
+        print(f"Running Scenario: {scenario.name}")
+        print(f"Description: {scenario.description}")
+        print(f"Duration: {scenario.duration_steps} steps ({scenario.duration_steps * 0.5:.1f} min)")
+        print(f"Initial Temperature: {scenario.initial_temps}")
+        print(f"Initial Humidity: {scenario.initial_humidity}")
         print(f"{'='*60}")
         
         # 시뮬레이터 초기화
@@ -766,7 +788,7 @@ class HVACSimulatorTester:
         
         # 메인 플롯 생성 (2x3 서브플롯)
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle(f'HVAC 시뮬레이션 결과: {scenario_name}', fontsize=16, fontweight='bold')
+        fig.suptitle(f'HVAC Simulation Result: {scenario_name}', fontsize=16, fontweight='bold')
         
         # 1. 온도 변화
         ax1 = axes[0, 0]
@@ -774,11 +796,11 @@ class HVACSimulatorTester:
             if data['temperatures'][i]:
                 ax1.plot(time_minutes, data['temperatures'][i], 
                         label=f'Zone {i+1}', color=self.colors[i], linewidth=2)
-        ax1.axhline(y=24, color='red', linestyle='--', alpha=0.7, label='목표 온도')
-        ax1.fill_between(time_minutes, 22, 26, alpha=0.2, color='green', label='쾌적 범위')
-        ax1.set_xlabel('시간 (분)')
-        ax1.set_ylabel('온도 (°C)')
-        ax1.set_title('존별 온도 변화')
+        ax1.axhline(y=24, color='red', linestyle='--', alpha=0.7, label='Target Temperature')
+        ax1.fill_between(time_minutes, 22, 26, alpha=0.2, color='green', label='Comfort Range')
+        ax1.set_xlabel('Time (min)')
+        ax1.set_ylabel('Temp (°C)')
+        ax1.set_title('Temp by Zone')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
@@ -788,11 +810,11 @@ class HVACSimulatorTester:
             if data['humidities'][i]:
                 ax2.plot(time_minutes, data['humidities'][i], 
                         label=f'Zone {i+1}', color=self.colors[i], linewidth=2)
-        ax2.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='목표 습도')
-        ax2.fill_between(time_minutes, 40, 60, alpha=0.2, color='blue', label='쾌적 범위')
-        ax2.set_xlabel('시간 (분)')
-        ax2.set_ylabel('상대습도 (%)')
-        ax2.set_title('존별 습도 변화')
+        ax2.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Target Humidity')
+        ax2.fill_between(time_minutes, 40, 60, alpha=0.2, color='blue', label='Comfort Range')
+        ax2.set_xlabel('Time (min)')
+        ax2.set_ylabel('Relative Humidity (%)')
+        ax2.set_title('Humidity by Zone')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
@@ -802,11 +824,11 @@ class HVACSimulatorTester:
             if data['comfort_scores'][i]:
                 ax3.plot(time_minutes, data['comfort_scores'][i], 
                         label=f'Zone {i+1}', color=self.colors[i], linewidth=2)
-        ax3.axhline(y=80, color='orange', linestyle='--', alpha=0.7, label='우수 기준')
-        ax3.fill_between(time_minutes, 70, 100, alpha=0.2, color='orange', label='양호 범위')
-        ax3.set_xlabel('시간 (분)')
-        ax3.set_ylabel('쾌적도 점수')
-        ax3.set_title('존별 쾌적도 변화')
+        ax3.axhline(y=80, color='orange', linestyle='--', alpha=0.7, label='Target Score')
+        ax3.fill_between(time_minutes, 70, 100, alpha=0.2, color='orange', label='Comfort Range')
+        ax3.set_xlabel('Time (min)')
+        ax3.set_ylabel('Comfort Score')
+        ax3.set_title('Comfort Score by Zone')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
@@ -814,12 +836,12 @@ class HVACSimulatorTester:
         ax4 = axes[1, 0]
         if data['power_consumption']:
             ax4.plot(time_minutes, data['power_consumption'], 
-                    color='red', linewidth=2, label='총 전력')
+                    color='red', linewidth=2, label='Total Power Consumption')
             ax4.axhline(y=self.safety_limits['power'], color='red', 
-                       linestyle='--', alpha=0.7, label='안전 한계')
-        ax4.set_xlabel('시간 (분)')
-        ax4.set_ylabel('전력 소비 (W)')
-        ax4.set_title('전력 소비 패턴')
+                       linestyle='--', alpha=0.7, label='Safty Margin')
+        ax4.set_xlabel('Time (min)')
+        ax4.set_ylabel('Power Consumption (W)')
+        ax4.set_title('Power Consumption Pattern')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
         
@@ -829,12 +851,12 @@ class HVACSimulatorTester:
             actions_array = np.array(data['actions'])
             ax5.plot(time_minutes, actions_array[:, 0], label='Peltier', linewidth=2)
             ax5.plot(time_minutes, np.mean(actions_array[:, 1:5], axis=1), 
-                    label='평균 내부 서보', linewidth=2)
+                    label='Avg Servo_int', linewidth=2)
             ax5.plot(time_minutes, np.mean(actions_array[:, 9:13], axis=1), 
-                    label='평균 소형 팬', linewidth=2)
-        ax5.set_xlabel('시간 (분)')
-        ax5.set_ylabel('제어 신호')
-        ax5.set_title('주요 제어 액션')
+                    label='AVG Fan_mini', linewidth=2)
+        ax5.set_xlabel('Time (min)')
+        ax5.set_ylabel('Control Signal')
+        ax5.set_title('Main Control Actions')
         ax5.legend()
         ax5.grid(True, alpha=0.3)
         ax5.set_ylim(-1.1, 1.1)
@@ -845,11 +867,11 @@ class HVACSimulatorTester:
             for component, values in data['reward_breakdown'].items():
                 if values:
                     ax6.plot(time_minutes, values, label=component.replace('_', ' ').title(), linewidth=2)
-        ax6.plot(time_minutes, data['rewards'], label='총 보상', 
+        ax6.plot(time_minutes, data['rewards'], label='Total Reward', 
                 color='black', linewidth=3, alpha=0.8)
-        ax6.set_xlabel('시간 (분)')
-        ax6.set_ylabel('보상 값')
-        ax6.set_title('보상 구성 요소')
+        ax6.set_xlabel('Time (min)')
+        ax6.set_ylabel('Reward Value')
+        ax6.set_title('Reward Components')
         ax6.legend()
         ax6.grid(True, alpha=0.3)
         
@@ -873,7 +895,7 @@ class HVACSimulatorTester:
         
         # 상세 분석 플롯 (2x2)
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'상세 분석: {scenario_name}', fontsize=14, fontweight='bold')
+        fig.suptitle(f'Detailed Analysis for HVAC Test: {scenario_name}', fontsize=14, fontweight='bold')
         
         # 1. 온도 분포 (박스 플롯)
         ax1 = axes[0, 0]
@@ -881,8 +903,8 @@ class HVACSimulatorTester:
         if temp_data:
             ax1.boxplot(temp_data, labels=[f'Zone {i+1}' for i in range(len(temp_data))])
             ax1.axhline(y=24, color='red', linestyle='--', alpha=0.7)
-        ax1.set_ylabel('온도 (°C)')
-        ax1.set_title('존별 온도 분포')
+        ax1.set_ylabel('Temp (°C)')
+        ax1.set_title('Zone-wise Temperature Distribution')
         ax1.grid(True, alpha=0.3)
         
         # 2. 에너지 효율성 시계열
@@ -892,9 +914,9 @@ class HVACSimulatorTester:
                                   for i in range(self.num_zones)]) for j in range(len(time_minutes))]
             efficiency = [c/max(p, 1) for c, p in zip(avg_comfort, data['power_consumption'])]
             ax2.plot(time_minutes, efficiency, color='green', linewidth=2)
-        ax2.set_xlabel('시간 (분)')
-        ax2.set_ylabel('효율성 (쾌적도/W)')
-        ax2.set_title('에너지 효율성 변화')
+        ax2.set_xlabel('Time (min)')
+        ax2.set_ylabel('Efficiency (Comfort/W)')
+        ax2.set_title('Energy Efficiency Trend')
         ax2.grid(True, alpha=0.3)
         
         # 3. CO2 농도
@@ -903,10 +925,10 @@ class HVACSimulatorTester:
             if data['co2_levels'][i]:
                 ax3.plot(time_minutes, data['co2_levels'][i], 
                         label=f'Zone {i+1}', color=self.colors[i], linewidth=2)
-        ax3.axhline(y=1000, color='orange', linestyle='--', alpha=0.7, label='권장 한계')
-        ax3.set_xlabel('시간 (분)')
-        ax3.set_ylabel('CO2 농도 (ppm)')
-        ax3.set_title('CO2 농도 변화')
+        ax3.axhline(y=1000, color='orange', linestyle='--', alpha=0.7, label='Recommended Limit')
+        ax3.set_xlabel('Time (min)')
+        ax3.set_ylabel('CO₂ Concentration (ppm)')
+        ax3.set_title('CO₂ Trend')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
@@ -916,10 +938,10 @@ class HVACSimulatorTester:
             if data['dust_levels'][i]:
                 ax4.plot(time_minutes, data['dust_levels'][i], 
                         label=f'Zone {i+1}', color=self.colors[i], linewidth=2)
-        ax4.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='나쁨 기준')
-        ax4.set_xlabel('시간 (분)')
-        ax4.set_ylabel('미세먼지 (μg/m³)')
-        ax4.set_title('미세먼지 농도 변화')
+        ax4.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Poor AQ Threshold')
+        ax4.set_xlabel('Time (min)')
+        ax4.set_ylabel('PM (μg/m³)')
+        ax4.set_title('PM Trend')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
         
@@ -1071,14 +1093,14 @@ class HVACSimulatorTester:
         energy_effs = [m.energy_efficiency for m in self.performance_metrics.values()]
         
         ax1_twin = ax1.twinx()
-        bars1 = ax1.bar(x_pos - 0.2, comfort_scores, 0.4, label='쾌적도', alpha=0.8)
-        bars2 = ax1_twin.bar(x_pos + 0.2, energy_effs, 0.4, label='에너지 효율', 
-                            color='orange', alpha=0.8)
+        bars1 = ax1.bar(x_pos - 0.2, comfort_scores, 0.4, label='Comfort', alpha=0.8)
+        bars2 = ax1_twin.bar(x_pos + 0.2, energy_effs, 0.4, label='Energy Efficiency', 
+                             color='orange', alpha=0.8)
         
-        ax1.set_xlabel('시나리오')
-        ax1.set_ylabel('쾌적도 점수', color='blue')
-        ax1_twin.set_ylabel('에너지 효율', color='orange')
-        ax1.set_title('시나리오별 쾌적도 vs 에너지 효율')
+        ax1.set_xlabel('Scenario')
+        ax1.set_ylabel('Comfort Score', color='blue')
+        ax1_twin.set_ylabel('Energy Efficiency', color='orange')
+        ax1.set_title('Comfort vs Energy Efficiency')
         ax1.set_xticks(x_pos)
         ax1.set_xticklabels([name.split()[0] for name in scenario_names], rotation=45)
         ax1.grid(True, alpha=0.3)
@@ -1094,12 +1116,12 @@ class HVACSimulatorTester:
             ax2.annotate(name.split()[0], (temp_rmses[i], safety_scores[i]), 
                         xytext=(5, 5), textcoords='offset points', fontsize=9)
         
-        ax2.set_xlabel('온도 RMSE')
-        ax2.set_ylabel('안전성 점수')
-        ax2.set_title('정확도 vs 안전성 (색상: 쾌적도)')
+        ax2.set_xlabel('Temperature RMSE')
+        ax2.set_ylabel('Safety Score')
+        ax2.set_title('Accuracy vs Safety (Color = Comfort)')
         ax2.grid(True, alpha=0.3)
         
-        plt.colorbar(scatter, ax=ax2, label='쾌적도')
+        plt.colorbar(scatter, ax=ax2, label='Comfort Score')
         plt.tight_layout()
         
         timestamp = time.strftime("%Y%m%d_%H%M%S")

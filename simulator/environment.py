@@ -101,6 +101,7 @@ class AdvancedSmartACSimulator:
         """
         action_dict = self._parse_action(action)
         hw_states = self._update_hardware(action_dict)
+        # print(hw_states)
         physics_state = self.physics_sim.update_physics(
             action_dict, hw_states['peltier'], hw_states['fans']
         )
@@ -151,7 +152,13 @@ class AdvancedSmartACSimulator:
         각 제어 명령을 하드웨어 모델에 적용하여 상태 업데이트
         - 이후 실제 제어 시스템 연동 시 해당 구간을 MQTT 송신 구간으로 치환 가능
         """
-        peltier_state = self.peltier.update(action_dict['peltier_control'], self.physics_sim.ambient_temp, self.dt)
+        avg_room_temp = float(self.physics_sim.T.mean())
+        peltier_state = self.peltier.update(
+            action_dict['peltier_control'],  # control (-1~1)
+            avg_room_temp,                   # chamber_temp ← **수정**
+            self.physics_sim.ambient_temp,   # ambient_temp ← **수정**
+            self.dt                          # dt
+            )       
         total_power = peltier_state['power_consumption']
 
         for i in range(self.num_zones):
