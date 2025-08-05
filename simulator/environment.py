@@ -8,7 +8,6 @@ from simulator.physics import PhysicsSimulator
 from simulator.utils import ZoneComfortCalculator
 from configs.hvac_config import target_conditions, safety_limits
 
-
 class AdvancedSmartACSimulator:
     """
     고도화된 스마트 에어컨 시뮬레이터
@@ -275,3 +274,20 @@ class AdvancedSmartACSimulator:
         state.append(self.physics_sim.ambient_hum / 100)
 
         return np.array(state, dtype=np.float32)
+    
+    def _get_current_state(self) -> Dict:
+        """
+        현재 시뮬레이터 상태를 반환
+        - 온도, 습도, CO2, 미세먼지, 쾌적도 등
+        """
+        physics_state = self.physics_sim.get_current_state()
+        sensor_readings = self._read_sensors(physics_state)
+        return {
+            "temperatures": self.physics_sim.T.tolist(),
+            "humidities": self.physics_sim.H.tolist(),  
+            "co2_levels": self.physics_sim.CO2.tolist(),
+            "dust_levels": self.physics_sim.Dust.tolist(),
+            "comfort_scores": self._calculate_comfort(sensor_readings),
+            "ambient_temp": self.physics_sim.ambient_temp,
+            "ambient_hum": self.physics_sim.ambient_hum,
+        }   
