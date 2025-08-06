@@ -6,7 +6,7 @@ from simulator.components import PeltierModel, FanModel, ServoModel
 from simulator.sensors import SensorModel
 from simulator.physics import PhysicsSimulator
 from simulator.utils import ZoneComfortCalculator
-from configs.hvac_config import target_conditions, safety_limits
+from configs.hvac_config import target_conditions, safety_limits, CONTROL_TERM
 
 class AdvancedSmartACSimulator:
     """
@@ -17,7 +17,7 @@ class AdvancedSmartACSimulator:
 
     def __init__(self, num_zones: int = 4):
         self.num_zones = num_zones
-        self.dt = 10.0  # 제어 주기 (초)
+        self.dt = CONTROL_TERM  # 제어 주기 (초)
 
         # 하위 시뮬레이터 구성
         self.physics_sim = PhysicsSimulator(num_zones)
@@ -150,7 +150,8 @@ class AdvancedSmartACSimulator:
         """
         각 제어 명령을 하드웨어 모델에 적용하여 상태 업데이트
         - 이후 실제 제어 시스템 연동 시 해당 구간을 MQTT 송신 구간으로 치환 가능
-        """
+        """        
+        # 펠티어 상태 업데이트
         avg_room_temp = float(self.physics_sim.T.mean())
         peltier_state = self.peltier.update(
             action_dict['peltier_control'],  # control (-1~1)
@@ -241,11 +242,11 @@ class AdvancedSmartACSimulator:
             return True
 
         for temp in sensor_readings['temperatures']:
-            if temp < safety_limits['temperature'][0] - 2 or temp > safety_limits['temperature'][1] + 2:
+            if temp < safety_limits['temperature'][0] - 2 or temp > safety_limits['temperature'][1] + 5:
                 return True
 
         for hum in sensor_readings['humidities']:
-            if hum < safety_limits['humidity'][0] - 10 or hum > safety_limits['humidity'][1] + 10:
+            if hum < safety_limits['humidity'][0] - 10 or hum > safety_limits['humidity'][1] + 30:
                 return True
 
         return False
