@@ -32,7 +32,7 @@ class PeltierModel:
         control: float,
         chamber_temp: float,
         ambient_temp: float,
-        dt: float = 30.0,
+        dt: float = 10.0,
     ) -> dict:
         """
         control ∈ [-1, 1]  →  cooling_intensity ∈ [0, 1]
@@ -103,7 +103,7 @@ class FanModel:
             alpha = 0.1
             self.current_rpm += alpha * (target_rpm - self.current_rpm)
         elif self.mode == "precise":
-            time_constant = 1.5  # 팬의 시간 상수 (s)
+            time_constant = 1.0  # 팬의 시간 상수 (s)
             self.current_rpm += (dt / time_constant) * (target_rpm - self.current_rpm)
 
         # 에너지 소비량
