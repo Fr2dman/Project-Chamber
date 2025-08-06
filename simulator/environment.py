@@ -17,7 +17,7 @@ class AdvancedSmartACSimulator:
 
     def __init__(self, num_zones: int = 4):
         self.num_zones = num_zones
-        self.dt = 30.0  # 제어 주기 (초)
+        self.dt = 10.0  # 제어 주기 (초)
 
         # 하위 시뮬레이터 구성
         self.physics_sim = PhysicsSimulator(num_zones)
