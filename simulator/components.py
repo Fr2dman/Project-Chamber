@@ -1,5 +1,6 @@
 from typing import Literal
 import numpy as np
+from configs.hvac_config import CONTROL_TERM
 
 class PeltierModel:
     """
@@ -13,7 +14,7 @@ class PeltierModel:
     MAX_HEAT_PUMPING_RATE = 65.0        # Qmax @ ΔT=0 K  (datasheet)
 
     def __init__(self, mode: Literal["simple", "precise"] = "simple"):
-        self.mode = mode
+        # self.mode = mode
 
         # ▶ 파라미터 (실측 기반 튜닝)
         self.max_heat_pumping_rate = self.MAX_HEAT_PUMPING_RATE      # 65 W
@@ -32,7 +33,7 @@ class PeltierModel:
         control: float,
         chamber_temp: float,
         ambient_temp: float,
-        dt: float = 10.0,
+        dt: float = CONTROL_TERM  # s
     ) -> dict:
         """
         control ∈ [-1, 1]  →  cooling_intensity ∈ [0, 1]
@@ -96,6 +97,7 @@ class FanModel:
     def set_pwm(self, pwm: float) -> float:
         pwm = max(0.0, min(100.0, pwm))
         self.target_pwm = pwm
+        self.current_rpm = self.pwm_to_rpm(pwm)
         return self.max_rpm * pwm / 100.0
 
     def update(self, target_rpm: float, dt: float) -> dict:
@@ -109,6 +111,9 @@ class FanModel:
         # 에너지 소비량
         power = (self.current_rpm / self.max_rpm) ** 2 * (10 if self.fan_type == "small" else 30)
         return {"rpm": self.current_rpm, "power": power}
+    
+    def pwm_to_rpm(self, pwm: float) -> float:
+        return self.max_rpm * pwm / 100.0
 
 
 class ServoModel:

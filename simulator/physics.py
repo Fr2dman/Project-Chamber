@@ -10,6 +10,7 @@ Author: ChatGPT (August 2025)
 from __future__ import annotations
 from typing import Sequence, Optional, Dict, List
 import numpy as np
+from configs.hvac_config import CONTROL_TERM
 
 # -----------------------------------------------------------------------------
 # 전역 상수 (문헌 + 실험값)
@@ -19,6 +20,7 @@ RHO_AIR = 1.2            # kg/m³
 DEFAULT_ZONE_VOL = 0.024 # m³ (가로30×세로20×높이40 cm - 4존 기준)
 AMBIENT_TEMP = 30.0      # °C
 AMBIENT_HUM = 70.0       # %RH
+INFIL_FRAC = 1.0e-3 / 3600    # 0.1 % · h⁻¹  →  s⁻¹ : 시연상자의 틈새 유입률
 # ---------------------------------------------------------------------------
 # ZoneEnergyBalance : 존별 열·수분 수지 (펠티어 배열 지원, 질량·에너지 보존 강화)
 # ---------------------------------------------------------------------------
@@ -57,7 +59,7 @@ class ZoneEnergyBalance:
         q_matrix: np.ndarray,          # (N,N) m³ s⁻¹
         peltier_rates: np.ndarray,     # (N,) W (음수 = 냉각)
         ambient_temp: float,           # °C
-        dt: float = 10.0,              # s
+        dt: float = CONTROL_TERM,              # s
     ) -> tuple[np.ndarray, np.ndarray]:
 
         # ------ 1) 질량유량 행렬 -----------------------------------------
@@ -66,8 +68,14 @@ class ZoneEnergyBalance:
         m_out   = m_dot.sum(axis=1)                 # kg s⁻¹ (→ out of zone)
         m_eff   = np.maximum(m_in, m_out)           # 보수적 – 질량 잔차 0
 
+        # -- “틈새 infiltration” : 존 부피의 0.1 %/h  (≈1e-6 m³/s per L) ----------
+        m_infil = self.RHO_AIR * self.V * INFIL_FRAC   # kg/s  (N,)
+        # 총 유입/유출 질량 (보존용)
+        m_in_tot  = m_in + m_infil
+        m_out_tot = m_out + m_infil               # 침투유량 = 동일량 배출
+
         # ------ 2) 대류 열수지 ------------------------------------------
-        q_conv  = self.C_P * (m_dot.T @ temps) - self.C_P * m_eff * temps  # W
+        q_conv = self.C_P * (m_dot.T @ temps) - self.C_P * m_out_tot * temps  # W
 
         # ------ 3) 벽 손실 ----------------------------------------------
         q_wall  = -self.ua_wall * (temps - ambient_temp)                  # W
@@ -84,7 +92,10 @@ class ZoneEnergyBalance:
         W_ext  = AMBIENT_HUM / 100.0 * self._Ws(np.array([ambient_temp]))[0]
 
         # 절대습량 혼합 (질량보존)
-        W_new  = (m_dot.T @ W_now + W_ext * m_in) / (m_in + 1e-9)
+        # 혼합 : (내부공기 + 침투공기) / 총 유입질량
+        num = (m_dot.T @ W_now) + W_ext * m_infil
+        den = m_in_tot + 1e-9
+        W_new = num / den
 
         # 다시 RH(%) 로 변환 (포화량은 새 온도 기준)
         RH_new = np.clip(W_new / self._Ws(temps_new) * 100.0, 0.0, 100.0)
@@ -297,6 +308,8 @@ class PhysicsSimulator:
 
         intake_temp = float((self.jet.last_Q_fan.diagonal() @ temps) / (self.jet.last_Q_fan.diagonal().sum()+1e-9))
 
+        print(f"Intake Temp: {intake_temp:.2f} °C")
+        print("Peltier Output - Thermal Power:", peltier_output['thermal_power'], "W")
         # 2) 펠티어 냉각량 분배
         pelt_rates = self._distribute_cooling(
             thermal_power=peltier_output['thermal_power'],
@@ -320,13 +333,14 @@ class PhysicsSimulator:
         action_dict: Dict,
         peltier_states: Dict,
         fan_states: Dict,
-        dt: float = 10.0,
+        dt: float = CONTROL_TERM,
     ) -> Dict[str, np.ndarray]:
         # ---- 입력 파싱 ----
         internal_angles = np.array(action_dict['internal_servo_angles'])
         external_angles = np.array(action_dict.get('external_servo_angles', [0.0] * self.n))
         fan_rpms_S = np.array([f['rpm'] for f in fan_states['small_fans']])
         fan_rpms_L = fan_states['large_fan']['rpm']
+
         peltier_output = peltier_states[0]
 
         # ---- 핵심 업데이트 ----
