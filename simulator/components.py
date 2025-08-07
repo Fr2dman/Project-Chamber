@@ -4,120 +4,76 @@ from configs.hvac_config import CONTROL_TERM
 
 class PeltierModel:
     """
-    Peltier 장치 모델 (v5)
-    - 제어 입력: -1.0(OFF) ~ +1.0(최대 냉각)
-    - 상태 변수: cold_side_temp (°C), hot_side_temp (°C)
-    - 출력 dict:
-        * thermal_power (W, 음수 = 실내에서 제거된 열)
-        * power_consumption (W)
-        * cold_side_temp (°C)
-        * hot_side_temp (°C)
-
-    개선 사항 (v4 -> v5)
-    -------------------
-    1. 핫측 온도(hot_side_temp)를 에너지 평형식으로 계산하여 현실성 증대.
-    2. 냉각량(q_pumping)을 Seebeck 효과, Joule 발열, 열전도 손실을 고려한 물리적 모델로 대체.
-    3. 주요 파라미터를 __init__ 인자로 노출하여 실측 기반 튜닝 용이.
+    Refactored PeltierModel (v6)
+    - 단일 냉각량 계산 엔진 사용: 데이터시트 기반 `calculate_actual_cooling`
+    - Seebeck, Joule, 전도 손실 통합 모델
+    - 명확한 출력: `thermal_power` (W), `power_consumption` (W), temps
     """
 
-    # -------------------------- 상수 --------------------------
-    COLD_TEMP_MIN = -50.0
-    
-    # -------------------------- v5 파라미터 --------------------------
-    # 실제 펠티어 소자(JK-TEC1-12706A)의 특성값 기반
-    MAX_CURRENT = 6.0          # A (데이터시트)
-    SEEBECK_COEFFICIENT = 0.04 # V/K (일반적인 Bi2Te3 소자값)
-    
+    COLD_TEMP_MIN = -50.0  # °C
+    MAX_CURRENT = 6.0      # A
+
     def __init__(
         self,
-        mode: Literal["simple", "precise"] = "precise", # 'precise' 모드 기본값
+        mode: Literal["simple", "precise"] = "precise",
         *,
-        internal_resistance: float = 2.1,  # Ω (데이터시트 2.05~2.26)
-        thermal_conductance: float = 0.2,  # W/K (열 누설)
-        thermal_mass: float = 200.0,       # J/K (Al 60g + 세라믹)
-        heatsink_thermal_resistance: float = 0.5, # K/W (공냉 히트싱크 성능)
-        heat_transfer_coeff: float = 10.0, # W/K (공냉 핀+팬)
-        tau: float = 30.0                  # s, 1차 지연 상수
-    ) -> None:
+        internal_resistance: float = 2.1,
+        thermal_conductance: float = 0.2,
+        thermal_mass: float = 200.0,
+        heatsink_thermal_resistance: float = 0.5,
+        heat_transfer_coeff: float = 10.0,
+        tau: float = 30.0
+    ):
         self.mode = mode
-
-        # ▶ 파라미터 (실측 기반 튜닝 가능)
         self.internal_resistance = internal_resistance
         self.thermal_conductance = thermal_conductance
         self.thermal_mass = thermal_mass
         self.heatsink_thermal_resistance = heatsink_thermal_resistance
         self.heat_transfer_coeff = heat_transfer_coeff
         self.tau = tau
+        self.cold_side_temp = 25.0
+        self.hot_side_temp = 25.0
 
-        # ▶ 상태
-        self.cold_side_temp: float = 25.0  # °C, 초기값
-        self.hot_side_temp: float = 25.0   # °C, 초기값
-
-    # ----------------------------------------------------------
     def update(
         self,
         control: float,
         chamber_temp: float,
         ambient_temp: float,
-        dt: float = CONTROL_TERM  # s
+        dt: float = CONTROL_TERM
     ) -> dict:
-        """한 step 시뮬레이션.
-
-        Parameters
-        ----------
-        control : float
-            -1.0(OFF) ~ 1.0(MAX) 제어 입력.
-        chamber_temp : float
-            실내 공기(또는 흡입 공기) 온도 [°C].
-        ambient_temp : float
-            외기 또는 히트싱크 냉각 공기의 온도 [°C].
-        dt : float, optional
-            적분 시간 간격 [s]. 기본 CONTROL_TERM.
-        """
-        # 0) 입력 정규화 및 전류 계산
+        # 1) 입력 정규화 및 제어 → 전류 계산
         control = float(np.clip(control, -1.0, 1.0))
-        cooling_intensity = (control + 1.0) / 2.0  # 0: OFF, 1: MAX
-        i_te = self.MAX_CURRENT * cooling_intensity # A
+        cooling_intensity = (control + 1.0) / 2.0
+        current = self.MAX_CURRENT * cooling_intensity
 
-        # 1) 냉측 온도와 핫측 온도를 이용해 냉각량 및 줄 발열량 계산
-        Tc_kelvin = self.cold_side_temp + 273.15
-        Th_kelvin = self.hot_side_temp + 273.15
-
-        # Seebeck 효과에 의한 열 흡수량
-        q_pumping = self.SEEBECK_COEFFICIENT * i_te * Tc_kelvin
-        
-        # 줄 발열량 (전체의 절반이 냉측으로 전달)
-        q_joule = 0.5 * self.internal_resistance * i_te**2
-
-        # 열전도 손실 (핫측 -> 냉측)
+        # 2) 핫측 에너지 밸런스
+        # 핫측 유입: Joule 발열 + 전도 손실
+        # 핫측 방출: 히트싱크 열 저항
+        q_joule = 0.5 * self.internal_resistance * current ** 2
         q_leak = self.thermal_conductance * (self.hot_side_temp - self.cold_side_temp)
+        net_hot = q_joule + q_leak - (self.hot_side_temp - ambient_temp) / self.heatsink_thermal_resistance
+        dT_hot = (net_hot / self.thermal_mass) * dt
+        self.hot_side_temp += dT_hot * (dt / (dt + self.tau))
 
-        # 2) 핫측 에너지 밸런스 업데이트
-        # 핫측으로 들어오는 열량 = 냉각량(q_pumping) + 줄 발열량(q_joule)
-        # 핫측에서 나가는 열량 = 히트싱크를 통한 방열
-        net_q_hot = q_pumping + q_joule - (self.hot_side_temp - ambient_temp) / self.heatsink_thermal_resistance
-        dT_hot = (net_q_hot / self.thermal_mass) * dt
-        self.hot_side_temp += dT_hot * (dt / (dt + self.tau)) # 1차 지연 적용
-
-        # 3) 냉측 에너지 밸런스 업데이트
-        # 냉측으로 들어오는 열량 = 챔버 공기 대류열(q_conv) + 줄 발열(q_joule) + 열전도(q_leak)
-        # 냉측에서 나가는 열량 = 냉각 효과(q_pumping)
+        # 3) 냉측 에너지 밸런스: 대류열 + Joule + 전도 - 냉각량
+        # 대류열(q_conv): 공기와의 열전달
         q_conv = self.heat_transfer_coeff * (chamber_temp - self.cold_side_temp)
-        net_q_cold = q_conv + q_joule + q_leak - q_pumping
-        dT_cold = (net_q_cold / self.thermal_mass) * dt
-        self.cold_side_temp += dT_cold * (dt / (dt + self.tau)) # 1차 지연 적용
+        # 실제 냉각량 계산(데이터시트 기반)
+        q_pumping = self.calculate_actual_cooling(current, self.cold_side_temp, self.hot_side_temp)
+        net_cold = q_conv + q_joule + q_leak - q_pumping
+        dT_cold = (net_cold / self.thermal_mass) * dt
+        self.cold_side_temp += dT_cold * (dt / (dt + self.tau))
 
-        # 4) 물리적 한계 클램핑
+        # 4) 물리적 클램핑
         self.cold_side_temp = np.clip(
             self.cold_side_temp,
             self.COLD_TEMP_MIN,
-            self.hot_side_temp - 1.0, # 냉측이 핫측보다 뜨거워지는 역전 방지
+            self.hot_side_temp - 1.0
         )
 
-        # 5) 출력
-        # thermal_power는 챔버에서 제거된 열량이므로 q_conv의 음수값으로 정의
-        thermal_power = -self.heat_transfer_coeff * (chamber_temp - self.cold_side_temp)
-        power_consumption = self.internal_resistance * i_te**2 # 전력 소비량 = I^2 * R
+        # 5) 결과
+        thermal_power = -q_pumping  # 음수: 냉각
+        power_consumption = current ** 2 * self.internal_resistance
 
         return {
             "thermal_power": thermal_power,
@@ -125,6 +81,23 @@ class PeltierModel:
             "cold_side_temp": self.cold_side_temp,
             "hot_side_temp": self.hot_side_temp,
         }
+
+    def calculate_actual_cooling(self, current: float, Tc: float, Th: float) -> float:
+        """
+        데이터시트 기반 냉각량
+        - base_cooling: 최대 냉각량(65W) × 전류 비율
+        - ΔT 의존 성능 감쇠
+        """
+        current_ratio = current / self.MAX_CURRENT
+        base = 65.0 * current_ratio
+        dT = Th - Tc
+        if dT <= 0:
+            eff = 1.0
+        elif dT <= 40:
+            eff = 1.0 - (dT / 65.0) * 0.7
+        else:
+            eff = max(0.1, 1.0 - (dT / 65.0))
+        return base * eff
 
 
 class FanModel:

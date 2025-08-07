@@ -7,7 +7,7 @@
 
 # ---------------- 기본 공통 ----------------
 NUM_ZONES: int = 4  # 상자 존 개수 – Simulator 생성 시 동일하게 맞춰야 함
-CONTROL_TERM = 30  # 제어 주기 (초) – 시뮬레이터와 일치해야 함
+CONTROL_TERM = 10  # 제어 주기 (초) – 시뮬레이터와 일치해야 함
 
 # ---------------- 목표 조건 ----------------
 TARGET_TEMP_C: float = 24.0   # °C
@@ -22,11 +22,11 @@ target_conditions = {
 
 # ---------------- 안전 한계 ----------------
 TEMP_LOWER, TEMP_UPPER = 20.0, 26.0  # °C
-RH_LOWER,   RH_UPPER   = 35.0, 65.0  # %
+RH_LOWER,   RH_UPPER   = 25.0, 70.0  # %
 
 safety_limits = {
-    "temperature": (TEMP_LOWER, TEMP_UPPER),
-    "humidity": (RH_LOWER, RH_UPPER),
+    "temperature": {"min": TEMP_LOWER,"max": TEMP_UPPER},
+    "humidity": {"min": RH_LOWER,"max": RH_UPPER},
 }
 
 # ---------------- 물리 파라미터 (physics.py 덮어쓰기) ---------------
