@@ -25,8 +25,8 @@ print("쾌적도 평균:", f"{initial_state['comfort_scores']['average_comfort']
 # 액션 벡터 생성 ([-1, 1] 범위, 14차원)
 # 예시: 최대 냉각 및 최대 풍량
 action = np.array([
-    +1.0,  # 펠티어: 최대 냉각
-    1.0, 0, 1.0, 1.0,  # 내부 서보: 모두 최대로 열기
+    1.0,  # 펠티어: 최대 냉각
+    1.0, 0.5, 0.0, 1.0,  # 내부 서보: 모두 최대로 열기
     1.0, 0.0, 1.0, 1.0,  # 외부 서보: 중간 각도
     1.0, 0.0, 1.0, 1.0,  # 소형 팬: 모두 최대 속도
     1.0   # 대형 팬: 최대 속도
@@ -35,7 +35,7 @@ action = np.array([
 # print("입력 액션 벡터:", action)    
 
 # 시뮬레이터 i-step 실행
-for i in range(3):
+for i in range(10):
     print(f"\n--- {i+1}-Step 제어 입력 ---")
     print("입력 액션 벡터:", action)     
     state_vector, reward, done, info = simulator.step(action)
@@ -46,6 +46,7 @@ for i in range(3):
     final_comfort_data = info['comfort_data']
 
     print(f"\n--- {i+1}-Step 실행 후 상태 ---")
+    print("펠티어 표면온도", f"{simulator.peltier.cold_side_temp:.1f}°C")
     print("내부 서보 각도:", [f"{angle:.1f}°" for angle in final_hw_state['servos']['internal']])
     print("외부 서보 각도:", [f"{angle:.1f}°" for angle in final_hw_state['servos']['external']])
     print("소형 팬 RPM:", [f"{fan['rpm']:.0f}" for fan in final_hw_state['fans']['small_fans']])

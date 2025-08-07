@@ -152,10 +152,17 @@ class AdvancedSmartACSimulator:
         - 이후 실제 제어 시스템 연동 시 해당 구간을 MQTT 송신 구간으로 치환 가능
         """        
         # 펠티어 상태 업데이트
-        avg_room_temp = float(self.physics_sim.T.mean())
+        # avg_room_temp = float(self.physics_sim.T.mean())
+        print('업데이트 됨. Peltier Control: ', action_dict['peltier_control'])
+        if self.physics_sim.jet.last_Q_fan is None:
+            # 첫 스텝에서는 팬 유량이 계산되지 않았으므로, 전체 평균 온도를 사용합니다.
+            intake_temp = float(self.physics_sim.T.mean())
+        else:
+            # 이전 스텝의 팬 유량을 기반으로 가중 평균된 흡기 온도를 계산합니다.
+            intake_temp = float((self.physics_sim.jet.last_Q_fan.diagonal() @ self.physics_sim.T) / (self.physics_sim.jet.last_Q_fan.diagonal().sum() + 1e-9))
         peltier_state = self.peltier.update(
             action_dict['peltier_control'],  # control (-1~1)
-            avg_room_temp,                   # chamber_temp ← **수정**
+            intake_temp,                   # chamber_temp ← 에어컨에 유입되는 온도
             self.physics_sim.ambient_temp,   # ambient_temp ← **수정**
             self.dt                          # dt
             )       
