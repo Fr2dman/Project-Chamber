@@ -17,10 +17,10 @@ from configs.hvac_config import CONTROL_TERM
 # -----------------------------------------------------------------------------
 CP_AIR = 1005.0          # J/(kg·K)
 RHO_AIR = 1.2            # kg/m³
-DEFAULT_ZONE_VOL = 0.024 # m³ (가로30×세로20×높이40 cm - 4존 기준)
+DEFAULT_ZONE_VOL = 0.096 # m³ (가로60×세로40×높이40 cm - 4존 기준)
 AMBIENT_TEMP = 30.0      # °C
 AMBIENT_HUM = 70.0       # %RH
-INFIL_FRAC = 1.0e-3 / 3600    # 0.1 % · h⁻¹  →  s⁻¹ : 시연상자의 틈새 유입률
+INFIL_FRAC = 2.0e-3 / 3600    # 0.1 % · h⁻¹  →  s⁻¹ : 시연상자의 틈새 유입률
 LATENT_HEAT_VAP = 2.45e6   # J/kg  (물 증발 잠열)
 # ---------------------------------------------------------------------------
 # ZoneEnergyBalance : 존별 열·수분 수지 (펠티어 배열 지원, 질량·에너지 보존 강화)
@@ -56,45 +56,60 @@ class ZoneEnergyBalance:
     # ---------------------------------------------------------------------
     def step(
         self,
-        temps: np.ndarray,             # (N,)  °C
-        humidities: np.ndarray,        # (N,)  %RH
-        q_matrix: np.ndarray,          # (N,N) m³ s⁻¹
-        peltier_rates: np.ndarray,     # (N,) W (음수 = 냉각)
-        ambient_temp: float,           # °C
-        w_removed: np.ndarray,            # (N,) kg/s (결로로 제거된 수분)
-        dt: float = CONTROL_TERM,              # s
+        temps: np.ndarray,          # (N,)  °C
+        humidities: np.ndarray,     # (N,)  %RH
+        q_matrix: np.ndarray,       # (N,N) m³ s⁻¹  (j → i)
+        peltier_rates: np.ndarray,  # (N,)   W      (음수 = 냉각)
+        ambient_temp: float,        # °C
+        w_removed: np.ndarray,      # (N,)   kg/s   (펠티어 표면 응축수)
+        dt: float = CONTROL_TERM,   # s
     ) -> tuple[np.ndarray, np.ndarray]:
 
-        # --- 1) 질량 유량 행렬 -----------------------------------
-        m_dot = q_matrix * self.RHO_AIR          # kg/s
-        m_in  = m_dot.sum(axis=0)                # 유입 kg/s
-        m_out = m_dot.sum(axis=1)                # 유출 kg/s
+        # ────────────────────────────────────────────────────────────
+        # 1) 질량 유량  (kg/s)
+        # ────────────────────────────────────────────────────────────
+        m_dot = q_matrix * self.RHO_AIR        # j → i
+        m_in  = m_dot.sum(axis=0)              # Σ_j ṁ_ij
+        m_out = m_dot.sum(axis=1)              # Σ_j ṁ_ji
 
-        # 틈새 침투 공기 (동일 질량 배출 가정)
-        m_infil = self.RHO_AIR * self.V * INFIL_FRAC   # kg/s
-        m_in_tot  = m_in  + m_infil
-        m_out_tot = m_out + m_infil
+        m_infil  = self.RHO_AIR * self.V * INFIL_FRAC   # 틈새 유입 kg/s
+        m_in_tot = m_in  + m_infil                      # 총 유입
+        # (동일 질량 배출 가정) m_out_tot = m_out + m_infil
 
-        # --- 2) 열수지 -------------------------------------------
-        q_conv = self.C_P * (m_dot.T @ temps) - self.C_P * m_out_tot * temps
-        q_wall = -self.ua_wall * (temps - ambient_temp)
-        q_total = q_conv + q_wall + peltier_rates
-        temps_new = temps + q_total*dt / self.C
+        # ────────────────────────────────────────────────────────────
+        # 2) 열 수지 (온도 업데이트)
+        #    q_conv_i = c_p · Σ_j ṁ_ij · (T_j − T_i)
+        # ────────────────────────────────────────────────────────────
+        q_conv = self.C_P * (m_dot @ temps - m_out * temps)
+        q_wall = -self.ua_wall * (temps - ambient_temp)               # 벽체 열손실
+        q_total = q_conv + q_wall + peltier_rates                     # + 펠티어
+        temps_new = temps + q_total * dt / self.C                     # ΔU = m·c_p·ΔT
 
-        # --- 3) 절대습량 혼합 ------------------------------------
-        W_now = humidities/100.0 * self._Ws(temps)
-        # coil에서 이미 제거된 증기 빼기
-        W_now = np.clip(W_now - w_removed*dt/self.m, 0, None)
-        W_ext = AMBIENT_HUM/100.0 * self._Ws(np.array([ambient_temp]))[0]
-        W_new = ((m_dot.T@W_now) + W_ext*m_infil) / (m_in_tot+1e-9)
+        # ────────────────────────────────────────────────────────────
+        # 3) 수분 수지  (절대습량 [kg/kg])
+        # ────────────────────────────────────────────────────────────
+        # ① step-전 절대습량 (펠티어 코일 응축분 차감)
+        W_now = humidities / 100.0 * self._Ws(temps)               # kg/kg
+        W_now = np.clip(W_now - w_removed * dt / self.m, 0.0, None)
 
-        # 응축 – 포화량 초과분 제거
-        Ws_new = self._Ws(temps_new)
-        condensed = np.maximum(0.0, W_new - Ws_new)
-        W_new -= condensed
+        # ② 순수 유입-유출·침투로 인한 변화량 (kg/kg·s⁻¹)
+        W_ext  = AMBIENT_HUM / 100.0 * self._Ws(np.asarray([ambient_temp]))[0]
+        dW_dt  = (m_dot @ W_now - m_out * W_now) / self.m          # (유입 − 유출)
+        dW_dt += INFIL_FRAC * (W_ext - W_now)                      # 틈새 침투 보정
 
-        # RH(%) 재계산
-        RH_new = np.clip(W_new / Ws_new * 100.0, 0.0, 100.0)
+        # ③ 예측 절대습량 (응축 전)
+        W_pred = np.clip(W_now + dW_dt * dt, 0.0, None)
+
+        # ④ 공기 중 응축 (이슬점 → 포화값 초과분 제거)
+        Ws_sat   = self._Ws(temps_new)                             # 포화 절대습량
+        cond_dew = np.maximum(0.0, W_pred - Ws_sat)                # kg/kg   (공기응축)
+
+        # ⑤ 총 제거 수분  = 공기응축 + 코일응축
+        cond_total = cond_dew + w_removed * dt / self.m
+        W_new = np.clip(W_pred - cond_total, 0.0, None)
+
+        # ⑥ 상대습도 재계산
+        RH_new = np.clip(W_new / Ws_sat * 100.0, 0.0, 100.0)
 
         return temps_new, RH_new
 
@@ -119,92 +134,76 @@ class JetModel:
     반환값 : (4×4) ndarray — Q[i,j] 는 시간당 zone j → i 로 유입되는 체적유량(m³/s)
     """
 
-    # ------------------------------
-    # 초기화
-    # ------------------------------
-    def __init__(self, num_zones: int = 4, c_d: float = 0.8):
+    # 슬롯 면적 계수 (m²/deg)
+    K_AREA_INT = 1.3e-4
+    MAX_SMALL_RPM = 7000.0
+    MAX_LARGE_RPM = 3300.0
+    DELTA_P_SMALL = 38.0  # Pa
+    LARGE_Q_MAX = 0.0382  # m³/s
+    SMALL_FANS_PER_ZONE = 2
+    NATURAL_MIX_RATE = 0.01  # s⁻¹
+
+    def __init__(self, num_zones: int = 4, max_ext_angle: float = 80.0, c_d: float = 0.8):
         self.n = num_zones
         self.c_d = c_d
+        self.max_ext_angle = max_ext_angle
+        self.last_Q_fan = None
+        self.last_Q_nat = None
 
-        # --- 팬 파라미터 (데이터시트 기반) ---
-        self.MAX_SMALL_FAN_RPM = 7000.0              # 40×10 mm 팬 기준
-        self.MAX_LARGE_FAN_RPM = 3300.0              # 120×25 mm 팬 기준
-        self.DELTA_P_SMALL = 38.0                    # Pa (3.87 mmH2O) – 소형팬 정압
-        self.LARGE_Q_MAX = 0.0382                    # m³/s (81 CFM) – 대형팬 자유공기 유량
-        self.SMALL_FANS_PER_ZONE = 2                 # 흡기팬 2EA per zone
+    def _slot_area_int(self, theta: float) -> float:
+        return max(0.0, theta) * self.K_AREA_INT
 
-        # --- 슬롯 & 혼합 파라미터 ---
-        self.K_AREA = 1.3e-4      # m²/deg  (CAD: 120 mm × 25 mm, 0~45°)
-        self.NATURAL_MIX_RATE = 0.01  # s⁻¹  (난류에 의한 배경 혼합)
-
-        # 내부 저장용
-        self.last_Q_fan: Optional[np.ndarray] = None
-        self.last_Q_nat: Optional[np.ndarray] = None
-
-    # ------------------------------
-    # 내부 슬롯 개구 면적 (deg → m²)
-    # ------------------------------
-    def _slot_area(self, theta_deg: float) -> float:
-        return max(0.0, theta_deg) * self.K_AREA
-
-    # ------------------------------
-    # 메인: 팬 RPM + θ_int → Q 행렬
-    # ------------------------------
     def get_flow_matrix(
         self,
-        fan_rpms_S: Sequence[float],   # len = n (존별 평균 RPM)
-        fan_rpms_L: float,             # 대형 팬 RPM (단일 값)
-        theta_int: Sequence[float],    # len = n (0~45°)
-        theta_ext: Optional[Sequence[float]] = None,  # **무시**
+        fan_rpms_S: Sequence[float],
+        fan_rpms_L: float,
+        theta_int: Sequence[float],
+        theta_ext: Optional[Sequence[float]] = None
     ) -> np.ndarray:
         fan_rpms_S = np.asarray(fan_rpms_S, dtype=float)
-        theta_int  = np.asarray(theta_int,  dtype=float)
+        theta_int = np.asarray(theta_int, dtype=float)
+        if theta_ext is None:
+            theta_ext = theta_int.copy()
+        theta_ext = np.asarray(theta_ext, dtype=float)
 
-        # --------------------------------------------------------
-        # 1) 존별 흡기 유량 (소형팬 2EA, RPM 선형 스케일)
-        # --------------------------------------------------------
+        # 1) 존별 흡기 유량 (소형팬)
         q_intake = np.zeros(self.n)
-        area_arr = np.zeros(self.n)
         for i in range(self.n):
-            area = self._slot_area(theta_int[i])
-            area_arr[i] = area
-            # 선형 스케일 (RPM / MAX)
-            eff_dp = self.DELTA_P_SMALL * (fan_rpms_S[i] / self.MAX_SMALL_FAN_RPM)
-            v = np.sqrt(max(0.0, 2 * eff_dp / RHO_AIR))
-            q_single = self.c_d * area * v                # 한 개 팬 기준
-            q_intake[i] = self.SMALL_FANS_PER_ZONE * q_single
+            area_int = self._slot_area_int(theta_int[i])
+            eff_dp = self.DELTA_P_SMALL * (fan_rpms_S[i] / self.MAX_SMALL_RPM)
+            v = np.sqrt(max(0.0, 2 * eff_dp / 1.2))
+            q_intake[i] = self.c_d * area_int * v * self.SMALL_FANS_PER_ZONE
 
+        # 2) 대형팬 토출 용량 제한
         total_intake = q_intake.sum()
-
-        # --------------------------------------------------------
-        # 2) 대형팬 덕트 용량 제한 (자유공기 유량 선형 스케일)
-        # --------------------------------------------------------
-        large_cap = self.LARGE_Q_MAX * (fan_rpms_L / self.MAX_LARGE_FAN_RPM)
-        if total_intake > 0:
-            scale = min(1.0, large_cap / total_intake)
-        else:
-            scale = 0.0
+        large_cap = self.LARGE_Q_MAX * (fan_rpms_L / self.MAX_LARGE_RPM)
+        scale = min(1.0, large_cap / total_intake) if total_intake > 0 else 0.0
         q_supply = q_intake * scale
 
-        # 팬 공급 행렬 (대각)
+                # 3) 외부 슬롯(theta_ext)에 따른 자연 혼합 조정
+        # theta_ext: 0(천장 수평)~max_ext_angle(지면 수직)
+        # ext_factor: 각 존의 바람 방향에 따른 직접 전달 비율
+        ext_factor = np.clip(theta_ext / self.max_ext_angle, 0.0, 1.0)
+
+        # 4) 팬 공급 행렬 (대각)
         Q_fan = np.diag(q_supply)
 
-        # --------------------------------------------------------
-        # 3) 자연 혼합 행렬 (비대각, 고정 계수)
-        # --------------------------------------------------------
+        # 5) 자연 혼합 행렬 (기존 Q_nat에서 컬럼별 스케일링)
         if self.n > 1:
-            natural = self.NATURAL_MIX_RATE * DEFAULT_ZONE_VOL  # m³/s
-            Q_nat = natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
+            vol = 1.0  # DEFAULT_ZONE_VOL 대체
+            natural = self.NATURAL_MIX_RATE * vol
+            base_nat = natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
+            # JetModel: ext_factor 로 감쇠하되, 행·열 모두 곱해 대칭 유지
+            Q_nat = base_nat * np.sqrt((1 - ext_factor)[None, :] * (1 - ext_factor)[:, None])
         else:
             Q_nat = np.zeros((1, 1))
 
-        # --------------------------------------------------------
-        # 4) 합계 행렬 및 내부 저장
-        # --------------------------------------------------------
+        # 6) 최종 유량 행렬
         Q_total = Q_fan + Q_nat
         self.last_Q_fan = Q_fan
         self.last_Q_nat = Q_nat
         return Q_total
+
 
 
 # -----------------------------------------------------------------------------
@@ -282,6 +281,8 @@ class PhysicsSimulator:
         m_cool_cap = fan_mass_flow * dt                                  # kg
         m_cool = min(e_removed/denom, m_cool_cap)      # kg
 
+        # print(f"펠티어 냉각량: {thermal_power:.2f} W, 제거 가능 질량: {m_cool:.2f} kg")
+
         # 2) 가중치 (내부 슬롯 각도 × 팬 유량 동일 분배假)
         weights = np.clip(internal_angles/45.0, 0.0, 1.0)
         if weights.sum() == 0:
@@ -291,13 +292,19 @@ class PhysicsSimulator:
         # 3) sensible 냉각분배 (기존)
         q_sensible = -(m_cool / dt) * CP_AIR * (temps - cold_side_temp) * frac  # W
 
-        # 4) latent – 결로량 계산
-        #    a) 냉측이 포화 수증기량 이하로 강제 ↓
-        Ws_cold = ZoneEnergyBalance._Ws(np.array([cold_side_temp]))[0]
-        w_removed = np.maximum(0.0, abs_hum - Ws_cold)*(m_cool*frac)/dt  # kg/s per zone
+        w_removed = np.zeros(n)  # 각 존별 결로로 제거된 수분 (kg/s)
+        # 4) 결로량 계산 (latent)
+        #   - 각 존별 냉각된 공기 온도 계산 후, 절대습량 계산
+        #   - 냉각된 공기에서 제거된 수분량 계산
+        #   - m_cool × frac[i] 만큼 냉각된 공기에서 제거됨
+        for i in range(n):
+            # 각 존별로 냉각된 공기 온도 계산
+            cooled_air_temp = max(cold_side_temp, temps[i] - 5.0)  # 최대 5도 냉각
+            Ws_cool = ZoneEnergyBalance._Ws(np.array([cooled_air_temp]))[0]
+            w_removed[i] = max(0.0, abs_hum[i] - Ws_cool) * (m_cool * frac[i]) / dt
+
         q_latent = -w_removed * LATENT_HEAT_VAP                             # W (음수)
 
-        print("잠열: ", q_latent)
         q_rates = q_sensible + q_latent
         return q_rates, w_removed
 
@@ -326,9 +333,6 @@ class PhysicsSimulator:
         fan_mass_flow = np.diag(self.jet.last_Q_fan).sum() * RHO_AIR
 
         intake_temp = float((self.jet.last_Q_fan.diagonal() @ temps) / (self.jet.last_Q_fan.diagonal().sum()+1e-9))
-
-        print(f"Intake Temp: {intake_temp:.2f} °C")
-        print("Peltier Output - Thermal Power:", peltier_output['thermal_power'], "W")
 
         abs_hum = self.H/100.0 * ZoneEnergyBalance._Ws(self.T)
         # 2) 펠티어 냉각량 분배
