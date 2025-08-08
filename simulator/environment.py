@@ -6,7 +6,8 @@ from simulator.components import PeltierModel, FanModel, ServoModel
 from simulator.sensors import SensorModel
 from simulator.physics import PhysicsSimulator
 from simulator.utils import ZoneComfortCalculator
-from configs.hvac_config import target_conditions, safety_limits, CONTROL_TERM
+from configs.hvac_config import target_conditions, safety_limits, CONTROL_TERM, COMFORT_REF, USE_TSV_HYBRID, K_TSV, CLAMP_T_EFF_TO_SAFETY, LEVEL_MODE
+
 
 class AdvancedSmartACSimulator:
     """
@@ -41,8 +42,8 @@ class AdvancedSmartACSimulator:
         }
 
         # 상태 공간 및 액션 공간
-        # 상태: 4(온도) + 4(습도) + 4(CO2) + 4(미세먼지) + 4(쾌적도) + 8(서보각도) + 5(팬속도) + 2(외부조건) + 4(영역별 TSV) = 39차원
-        self.state_dim = 39
+        # 상태: 4(온도) + 4(습도) + 4(CO2) + 4(미세먼지) + 4(쾌적도) + 8(서보각도) + 5(팬속도) + 2(외부조건) + 4(영역별 TSV) + 4(목표온도) = 43차원
+        self.state_dim = 43
         # 액션: 1(펠티어) + 4(내부슬롯) + 4(외부슬롯) + 4(소형팬) + 1(대형팬) = 14차원
         self.action_dim = 14
         
@@ -58,6 +59,9 @@ class AdvancedSmartACSimulator:
         self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float)
         self.prev_action = np.zeros(self.action_dim, dtype=float)
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
+        self.prev_power = 0.0
+        self.prev_discomfort = np.zeros(self.num_zones, dtype=float)  # |S_ref - S|/S_ref
+        self.occ_weights = np.ones(self.num_zones, dtype=float)       # 재실 가중치(향후 교체)
 
         self.reset()
 
@@ -95,6 +99,13 @@ class AdvancedSmartACSimulator:
         self.episode_data['comfort_scores'].clear()
         self.episode_data['power_consumption'].clear()
         self.episode_start_time = time.time()
+
+        state0 = self._get_current_state()
+        scores0 = np.asarray(state0["comfort_scores"]["comfort_scores"], dtype=float)
+        self.prev_discomfort = np.abs(COMFORT_REF - scores0) / COMFORT_REF   # ← 첫 스텝 양의 R_prog 보장
+        self.prev_temps = np.asarray(state0["temperatures"], dtype=float).copy()
+        self.prev_power = 0.0  # 안전하게 초기화
+        self.prev_action = np.zeros_like(self.prev_action)  # 있다면
 
         return self._get_state_vector()
 
@@ -260,50 +271,160 @@ class AdvancedSmartACSimulator:
         return {"comfort_scores": scores, "average_comfort": float(np.mean(scores))}
 
     # ----------------------------------------------------------------------
-    # 9. Reward (임시: 기존 그대로, 추후 Direction 보상으로 교체)
+    # 9. Reward
     # ----------------------------------------------------------------------
     def _calculate_reward(self, sensor_readings: Dict, comfort_data: Dict,
-                          hw_states: Dict, action_dict: Dict, prev_action_raw: np.ndarray):
+                        hw_states: Dict, action_dict: Dict, prev_action_raw: np.ndarray):
+        from configs.hvac_config import (
+            COMFORT_REF, COMFORT_BAND_DELTA, HUMIDITY_BAND, CO2_REF,
+            P_REF, P_CAP, RW, LAMBDA_RAMP, LAMBDA_PEAK, safety_limits
+        )
+
+        def huber(x, delta):
+            ax = np.abs(x)
+            return np.where(ax <= delta, 0.5 * (x**2), delta*(ax - 0.5*delta))
+
+        def dist_to_band(x, lo, hi):
+            x = np.asarray(x, dtype=float)
+            return np.where(x < lo, lo - x, np.where(x > hi, x - hi, 0.0))
+
+        # ------------------------------
+        # 1) 쾌적 점수 기반 진행·수준·공정성
+        # ------------------------------
+        scores = np.asarray(comfort_data["comfort_scores"], dtype=float)  # 0..100
+        w = self.occ_weights                                             # (N,)
+        d_now = np.abs(COMFORT_REF - scores) / COMFORT_REF               # 0..~1  (양측형)
+        # 진행(개선량)
+        R_prog = float(np.sum(w * (self.prev_discomfort - d_now)))
+        # 수준 보상: LEVEL_MODE에 따라 선택
+        if LEVEL_MODE == "targeted":
+            # (기존) 목표점 85에서 ±이탈을 대칭 벌점
+            R_level = -float(np.mean(huber(scores - COMFORT_REF,
+                                           COMFORT_BAND_DELTA) / COMFORT_BAND_DELTA))
+        elif LEVEL_MODE == "threshold":
+            # 85 미만만 벌점: 부족분만 허버로 패널티
+            deficit = np.clip(COMFORT_REF - scores, 0.0, None)
+            R_level = -float(np.mean(huber(deficit,
+                                           COMFORT_BAND_DELTA) / COMFORT_BAND_DELTA))
+        elif LEVEL_MODE == "maximize":
+            # 점수 자체를 보상(+): 85를 기준으로 0~1 스케일(상한 클립)
+            R_level = float(np.clip((np.mean(scores) - COMFORT_REF) / (100.0 - COMFORT_REF), 0.0, 1.0))
+        else:
+            raise ValueError(f"Unknown LEVEL_MODE: {LEVEL_MODE}")
         
-        temps = np.asarray(sensor_readings["temperatures"], dtype=float)  # numpy 변환
+        # 최악존 억제
+        R_fair = -float(np.max(w * d_now))
 
-        # --- 1) TSV‑direction 보상 ---
-        delta_T = np.clip((sensor_readings["temperatures"] - self.prev_temps) / 1.0, -1, 1)       # 1 °C scaling
-        delta_v = np.clip((action_dict["small_fan_pwm"] - self.prev_fan_pwm) / 90.0,  -1, 1)      # 90 PWM scaling
-        sign    = -np.sign(self.current_tsv)                                                      # +1 want ↑ temp if cold
-        kappa   = 0.3
-        R_dir   = float(np.mean(sign * delta_T + kappa * sign * delta_v))                         # [-1,1]
+        # ------------------------------
+        # 2) 에너지 (절대 + 램프 + 피크)
+        # ------------------------------
+        P_t = float(hw_states.get("total_power", 0.0))
+        R_energy = - (P_t / P_REF) \
+                - LAMBDA_RAMP * abs(P_t - self.prev_power) / max(P_REF, 1e-6) \
+                - LAMBDA_PEAK * max(0.0, P_t - P_CAP) / max(P_REF, 1e-6)
 
-        # --- 2) Comfort 레벨 --- 80점 기준으로 0
-        R_c = float(np.mean([(c/100.0) - 0.8 for c in comfort_data["comfort_scores"]]))           # approx [-0.8,0.2]
+        # ------------------------------
+        # 3) 습도/CO2 제약 (완화형 패널티)
+        # ------------------------------
+        hum = np.asarray(sensor_readings["humidities"], dtype=float)
+        co2 = np.asarray(sensor_readings["co2_levels"], dtype=float)
 
-        # --- 3) Energy penalty (선형) ---
-        P_tot   = hw_states.get("total_power", 0.0)
-        P_MAX   = 1000.0                                                                          # [W] 가정, 필요시 config
-        R_e     = - P_tot / P_MAX
+        R_hum = -float(np.mean(dist_to_band(hum, HUMIDITY_BAND[0], HUMIDITY_BAND[1]) / 10.0))
+        R_co2 = -float(np.mean(np.clip((co2 - CO2_REF) / CO2_REF, 0.0, None)))
 
-        # --- 4) Smooth penalty ---
-        R_s = -0.05 * float(np.abs(self.prev_action - prev_action_raw).sum())
+        # ------------------------------
+        # 4) 조작 비용 (Δa + 사용량)
+        # ------------------------------
+        # Δa (기존 smooth) – 기존 구현은 prev_action - prev_action_raw 사용, 의미 동일
+        R_act_delta = -0.05 * float(np.abs(self.prev_action - prev_action_raw).sum())
 
-        # --- 5) Safety penalty ---
-        temp_max = safety_limits["temperature"]["max"]
-        temp_min = safety_limits["temperature"]["min"]
-        safety_violation = bool(np.any(temps > temp_max) or np.any(temps < temp_min))
-        R_safe = -5.0 if safety_violation else 0.0
+        # 사용량: 펠티어/팬의 '세기'를 약하게 제약 (에너지 항과 중복되지 않게 낮은 가중치)
+        small = np.asarray(action_dict["small_fan_pwm"]) / self.action_ranges["fan_pwm"][1]
+        large = np.array([action_dict["large_fan_pwm"]]) / self.action_ranges["fan_pwm"][1]
+        # 펠티어: [-1,1] → [0,1]
+        pelt = (float(action_dict["peltier_control"]) + 1.0) / 2.0
+        use_norm2 = pelt**2 + float(np.sum(small**2) + np.sum(large**2))
+        R_act_use = -use_norm2 / (len(small) + len(large) + 1)
 
-        # 가중합
-        w_dir, w_c, w_e, w_s = 1.0, 0.6, 0.2, 0.1
-        reward = w_dir*R_dir + w_c*R_c + w_e*R_e + w_s*R_s + R_safe
+        # ------------------------------
+        # 5) 안전 패널티 (보상–종료 정합)
+        # ------------------------------
+        temps = np.asarray(sensor_readings["temperatures"], dtype=float)
+        tmin, tmax = safety_limits["temperature"]["min"], safety_limits["temperature"]["max"]
+        hmin, hmax = safety_limits["humidity"]["min"], safety_limits["humidity"]["max"]
+        temp_violation = np.any((temps < tmin) | (temps > tmax))
+        hum_violation  = np.any((hum   < hmin) | (hum   > hmax))
+        # CO2 안전 한계가 필요하면 config에 추가하세요.
+        R_safe = -5.0 if (temp_violation or hum_violation) else 0.0
+
+        # ------------------------------
+        # 5.5) (NEW) 목표온도 추적 & TSV-방향성 보상
+        # ------------------------------
+        # target_conditions는 모듈 상단에서 import된 전역을 사용
+        # --- 하이브리드 목표 적용 ---
+        T_target = np.asarray(target_conditions["temperature"], dtype=float)
+        tsv = np.asarray(self.current_tsv, dtype=float)
+
+        if USE_TSV_HYBRID:
+            T_eff = T_target - K_TSV * tsv      # TSV>0(덥다) → 목표 살짝 낮춤
+            if CLAMP_T_EFF_TO_SAFETY:
+                tmin = safety_limits["temperature"]["min"]
+                tmax = safety_limits["temperature"]["max"]
+                T_eff = np.clip(T_eff, tmin, tmax)
+        else:
+            T_eff = T_target
+
+
+        # (a) Setpoint Tracking: |T - T_target| 작을수록 높게
+        R_track = -float(np.mean(np.abs(temps - T_eff)))
+
+        # (b) TSV 방향성: TSV>0(덥다)면 ΔT<0, TSV<0(춥다)면 ΔT>0가 좋음
+        delta_T = temps - self.prev_temps
+        tsv_sign = np.sign(tsv)
+        # 재실 가중치 평균으로 스케일 안정화
+        w_sum = float(np.sum(w)) if float(np.sum(w)) > 0 else 1.0
+        R_dir = float(np.sum(w * (- tsv_sign * delta_T)) / w_sum)
+
+        # ------------------------------
+        # 6) 가중합
+        # ------------------------------
+        reward = (
+            RW["prog"]      * R_prog   +
+            RW["level"]     * R_level  +
+            RW["fair"]      * R_fair   +
+            RW["energy"]    * R_energy +
+            RW["hum"]       * R_hum    +
+            RW["co2"]       * R_co2    +
+            RW["act_delta"] * R_act_delta +
+            RW["act_use"]   * R_act_use +
+            RW.get("track", 0.0) * R_track +     # (NEW)
+            RW.get("dir",   0.0) * R_dir   +     # (NEW)
+            R_safe
+        )
 
         breakdown = {
-            "R_dir":       R_dir,
-            "R_comfort":  R_c,
-            "R_energy":   R_e,
-            "R_smooth":   R_s,
-            "R_safety":   R_safe,
-            "reward":     reward,
+            "R_prog":   R_prog,
+            "R_level":  R_level,
+            "R_fair":   R_fair,
+            "R_energy": R_energy,
+            "R_hum":    R_hum,
+            "R_co2":    R_co2,
+            "R_act_d":  R_act_delta,
+            "R_act_u":  R_act_use,
+            "R_track":  R_track,   # (NEW)
+            "R_dir":    R_dir,     # (NEW)
+            "R_safety": R_safe,
+            "reward":   reward,
+            "T_eff":    T_eff.tolist()   # 디버깅을 위해 하이브리드 목표를 노출 (테스트 코드에서 찍어보세요)
         }
+
+        # --- 상태 업데이트 (다음 step 대비)
+        self.prev_discomfort = d_now
+        self.prev_power = P_t
+        # prev_temps는 step()에서 5.6 단계에 갱신됩니다.
+
         return reward, breakdown
+
     
     # ----------------------------------------------------------------------
     # 10. Done 체크 (기존 유지)
@@ -344,7 +465,9 @@ class AdvancedSmartACSimulator:
         # --- NEW: TSV (-3~+3 → -1~1)
         state += [x / 3 for x in self.current_tsv]
         # --- 하드웨어 상태
-        state += [servo.current_angle / 60 for servo in self.internal_servos]
+        # --- NEW: 목표온도(°C → 대략 [-1,1] 범위) ---
+        state += [ (t - 15.0) / 20.0 for t in target_conditions["temperature"] ]
+        state += [servo.current_angle / 45 for servo in self.internal_servos]
         state += [servo.current_angle / 80 for servo in self.external_servos]
         state += [fan.current_rpm / 7000 for fan in self.small_fans]
         state.append(self.large_fan.current_rpm / 3300)

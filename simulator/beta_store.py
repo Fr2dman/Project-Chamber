@@ -65,7 +65,7 @@ class BetaStore:
             return  # NaN/Inf 저장 방지
         with cls._lock:
             cls._data[zone_id] = value
-            cls._save()
+            # cls._save() # 프로그램 종료 시 atexit에 의해 한번만 저장되도록 수정
 
 
 # 모듈 import 시 자동 로드, 프로세스 종료 시 자동 저장
