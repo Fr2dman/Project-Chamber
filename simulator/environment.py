@@ -47,6 +47,10 @@ class AdvancedSmartACSimulator:
         # 액션: 1(펠티어) + 4(내부슬롯) + 4(외부슬롯) + 4(소형팬) + 1(대형팬) = 14차원
         self.action_dim = 14
         
+        # --- 물리적 "Off" 상태에 해당하는 액션 벡터 정의 ---
+        # 펠티어(-1)는 off, 팬/서보(-1)는 최소값(0)으로 매핑됨
+        self.off_action = np.full(self.action_dim, -1.0, dtype=np.float32)
+
         # --- 에피소드 로깅용 버퍼 ---
         self.episode_data: Dict[str, list] = {
             'rewards': [],
@@ -56,13 +60,13 @@ class AdvancedSmartACSimulator:
 
         # --- 보상 계산 보조 변수 ---
         self.prev_temps = np.zeros(self.num_zones, dtype=float)
-        self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float)
+        self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float) # 이 변수는 현재 보상계산에 사용되지 않음
         self.prev_action = np.zeros(self.action_dim, dtype=float)
-        self.current_tsv = np.zeros(self.num_zones, dtype=float)
         self.prev_power = 0.0
         self.prev_discomfort = np.zeros(self.num_zones, dtype=float)  # |S_ref - S|/S_ref
         self.occ_weights = np.ones(self.num_zones, dtype=float)       # 재실 가중치(향후 교체)
-
+        self.current_tsv = np.zeros(self.num_zones, dtype=float)
+        
         self.reset()
 
     def update_tsv(self, tsv_list: List[float]):
@@ -90,8 +94,8 @@ class AdvancedSmartACSimulator:
 
         # 보조 변수 리셋
         self.prev_temps = self.physics_sim.T.copy()
-        self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float)
-        self.prev_action = np.zeros(self.action_dim, dtype=float)
+        self.prev_fan_pwm.fill(0)
+        self.prev_action = self.off_action.copy()
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
 
         self.time_step = 0
@@ -105,7 +109,6 @@ class AdvancedSmartACSimulator:
         self.prev_discomfort = np.abs(COMFORT_REF - scores0) / COMFORT_REF   # ← 첫 스텝 양의 R_prog 보장
         self.prev_temps = np.asarray(state0["temperatures"], dtype=float).copy()
         self.prev_power = 0.0  # 안전하게 초기화
-        self.prev_action = np.zeros_like(self.prev_action)  # 있다면
 
         return self._get_state_vector()
 
@@ -156,7 +159,7 @@ class AdvancedSmartACSimulator:
         # 5.5 로깅
         self.episode_data['rewards'].append(reward)
         self.episode_data['comfort_scores'].append(comfort_data['average_comfort'])
-        self.episode_data['power_consumption'].append(hw_states['total_power'])
+        self.episode_data['power_consumption'].append(hw_states['step_power_consumption'])
 
         # 5.6 next‑state 준비 (prev_* 업데이트)
         self.prev_temps = np.array(sensor_readings['temperatures'])
@@ -180,7 +183,7 @@ class AdvancedSmartACSimulator:
         def _scale(val, min_val, max_val):
             return (val + 1) / 2 * (max_val - min_val) + min_val
         return {
-            'peltier_control': action[0],
+            'peltier_control': action[0], # -1(Off) ~ +1(최대 냉방)
             'internal_servo_angles': _scale(action[1:5], *self.action_ranges['internal_servo']),
             'external_servo_angles': _scale(action[5:9], *self.action_ranges['external_servo']),
             'small_fan_pwm': _scale(action[9:13], *self.action_ranges['fan_pwm']),
@@ -203,13 +206,7 @@ class AdvancedSmartACSimulator:
             # 이전 스텝의 팬 유량을 기반으로 가중 평균된 흡기 온도를 계산합니다.
             intake_temp = float((self.physics_sim.jet.last_Q_fan.diagonal() @ self.physics_sim.T) / (self.physics_sim.jet.last_Q_fan.diagonal().sum() + 1e-9))
         
-        peltier_state = self.peltier.update(
-            action_dict['peltier_control'],  # control (-1~1)
-            intake_temp,                   # chamber_temp ← 에어컨에 유입되는 온도
-            self.physics_sim.ambient_temp,   # ambient_temp ← **수정**
-            self.dt                          # dt
-            )       
-        total_power = peltier_state['power_consumption']
+        total_power_consumption = 0.0
 
         for i in range(self.num_zones):
             self.internal_servos[i].set_angle(action_dict['internal_servo_angles'][i])
@@ -222,11 +219,21 @@ class AdvancedSmartACSimulator:
             rpm = self.small_fans[i].set_pwm(action_dict['small_fan_pwm'][i])
             fan_state = self.small_fans[i].update(rpm, self.dt)
             small_fan_states.append(fan_state)
-            total_power += fan_state['power']
+            total_power_consumption += fan_state['power_consumption']
 
         rpm_large = self.large_fan.set_pwm(action_dict['large_fan_pwm'])
         large_fan_state = self.large_fan.update(rpm_large, self.dt)
-        total_power += large_fan_state['power']
+        total_power_consumption += large_fan_state['power_consumption']
+
+        peltier_state = self.peltier.update(
+            action_dict['peltier_control'],  # control (-1~1)
+            intake_temp,                   # chamber_temp ← 에어컨에 유입되는 온도
+            self.physics_sim.ambient_temp,   # ambient_temp ← **수정**
+            self.dt,                          # dt
+            q_load_from_air=getattr(self.physics_sim, '_last_q_removed', None)  # 이전 step에서 공기에서 제거된 열량
+            )       
+        
+        total_power_consumption += peltier_state['power_consumption']
 
         return {
             'peltier': {0: peltier_state},
@@ -238,7 +245,7 @@ class AdvancedSmartACSimulator:
                 'small_fans': small_fan_states,
                 'large_fan': large_fan_state,
             },
-            'total_power': total_power
+            'step_power_consumption': total_power_consumption
         }
     
     # ----------------------------------------------------------------------
@@ -318,7 +325,7 @@ class AdvancedSmartACSimulator:
         # ------------------------------
         # 2) 에너지 (절대 + 램프 + 피크)
         # ------------------------------
-        P_t = float(hw_states.get("total_power", 0.0))
+        P_t = float(hw_states.get("step_power_consumption", 0.0))
         R_energy = - (P_t / P_REF) \
                 - LAMBDA_RAMP * abs(P_t - self.prev_power) / max(P_REF, 1e-6) \
                 - LAMBDA_PEAK * max(0.0, P_t - P_CAP) / max(P_REF, 1e-6)

@@ -63,13 +63,13 @@ for step in range(steps):
     action[0] = +1.0 if step < steps//2 else +0.3   # 전반 강냉각, 후반 완화
     
     # internal servo angles (0~45deg) normalized
-    action[1:5] = np.array([+1, +1, -0.5, -0.5])    # zone0,1 wide open
+    action[1:5] = np.array([+1, +1, 0, 0])    # zone0,1 wide open
     
     # external servo angles (0~80deg) normalized
-    action[5:9] = np.array([-1, -1, +1, +1])        # zone0,1 수평, zone2,3 수직
+    action[5:9] = np.array([0, 0, +1, +1])        # zone0,1 수평, zone2,3 수직
     
     # small fan PWM (0~80%) normalized
-    action[9:13] = np.array([+1, +1, -0.5, -0.5]) 
+    action[9:13] = np.array([0, +1, -0.5, -0.5]) 
     
     # large fan
     action[13] = 0.8
