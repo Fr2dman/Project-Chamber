@@ -1,6 +1,13 @@
 # unit_test_phi.py
 import numpy as np
 import matplotlib.pyplot as plt
+import sys, os
+
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    
 from simulator.physics import PhysicsSimulator
 from simulator.components import PeltierModel # 펠티어 모델을 직접 사용하기 위해 import
 

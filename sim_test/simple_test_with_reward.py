@@ -1,20 +1,27 @@
 # simple_one_step_test.py
-from simulator.environment import AdvancedSmartACSimulator
+import sys, os
 import numpy as np
 import pandas as pd
 
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from simulator.environment import AdvancedSmartACSimulator
+
 # ===== 설정 =====
 # TSV 시나리오: 한 번의 step에서 주입할 TSV (존 수와 길이 동일)
-TSV_VALUES = [2.0, -2.0, 2.0, 2.0]   # "춥다" 피드백 (cold_all)
+TSV_VALUES = [0.0, 0.0, 0.0, 0.0]   # "춥다" 피드백 (cold_all)
 
 # 액션 벡터(14차원, [-1, 1]): [peltier, 4x internal, 4x external, 4x small fans, large fan]
 # 아래는 'max_cool' 예시
 ACTION = np.array([
-    0.0,            # Peltier: 최대 냉각
+    1.0,            # Peltier: 최대 냉각
     1.0, 1.0, 1.0, 1.0,     # 내부 슬롯(각도) 크게 열기
     0.5, 0.5, 0.5, 0.5,     # 외부 슬롯(각도) 중간
-    0.0, 0.0, 0.0, 0.0,     # 소형 팬 최대
-    0.0                     # 대형 팬 최대
+    1.0, 1.0, 1.0, 1.0,     # 소형 팬 최대
+    1.0                    # 대형 팬 최대
 ], dtype=np.float32)
 
 def maybe_set_tsv(sim, tsv_list):

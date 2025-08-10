@@ -2,8 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import unittest # 기본적인 테스트 구조를 위해 unittest.TestCase 상속
+import sys, os
 
-# 제공해주신 시뮬레이터 코드가 'simulator' 폴더에 있다고 가정합니다.
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from simulator.environment import AdvancedSmartACSimulator
 
 def run_simulation(env: AdvancedSmartACSimulator, fixed_action: np.ndarray, duration_steps: int = 120):

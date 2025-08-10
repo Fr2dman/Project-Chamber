@@ -1,3 +1,10 @@
+import sys, os
+
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from simulator.physics import JetModel
 
 def test_jet_model():
@@ -38,7 +45,7 @@ def test_jet_model():
         fan_rpms_S=[3000, 3000, 3000, 3000],
         fan_rpms_L=2000,
         theta_int=[45, 30, 30, 45],  # 내부 슬롯 차등
-        theta_ext=[0, 30, 60, 80]    # 외부 슬롯 차등
+        theta_ext=[20, 30, 60, 80]    # 외부 슬롯 차등
     )
     print(f"재순환 비율: {info3['recirculation_ratio']}")
     print(f"혼합 계수: {info3['mixing_factor']}")

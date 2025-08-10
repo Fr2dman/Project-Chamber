@@ -17,8 +17,13 @@ from typing import Dict, List, Tuple, Callable
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import sys, os
 
-# Mock import (실제 환경에서는 from simulator.environment import AdvancedSmartACSimulator)
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from simulator.environment import AdvancedSmartACSimulator
 
 @dataclass
@@ -239,7 +244,7 @@ class HVACSimulatorTester:
         temps = info['sensor_readings']['temperatures']
         humids = info['sensor_readings']['humidities']
         comforts = info['comfort_data']['comfort_scores']
-        power = info['hardware_states']['total_power']
+        power = info['hardware_states']['step_power_consumption']
         
         for i in range(self.num_zones):
             self.current_data['temperatures'][i].append(temps[i])

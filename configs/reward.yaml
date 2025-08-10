@@ -1,0 +1,54 @@
+# reward.yaml — reward & tracking/TSV config
+# 이 파일은 hvac_config.py가 있을 경우 '선택적으로' 로드되어
+# 동일한 변수(COMFORT_REF, RW 등)를 오버라이드합니다.
+
+comfort_ref: 85 # 목표 쾌적 점수(0~100)
+comfort_band_delta: 5 # 허버/임계 보정폭(점수)
+humidity_band: [30, 70] # %RH 허용 밴드
+co2_ref: 1000 # ppm 기준
+
+# 전력 정규화 기준(시뮬레이터 단위)
+p_ref: 600
+p_cap: 800
+
+# 보상 레벨 모드: threshold | targeted | maximize
+level_mode: threshold
+
+# TSV 기반 목표 조정 및 추적
+tsv:
+  use_hybrid: true # 보상에서 T_eff 사용
+  k_tsv: 0.7 # °C/TSV (0.6~0.8 권장)
+  deadband: 0.5 # |TSV|<deadband면 이동 없음
+  t_eff_ema_alpha: 0.30 # T_eff EMA 스무딩
+  clamp_to_safety: true # 안전 한계로 클램프
+
+tracking:
+  band: 1.5 # |T - T_eff| 정규화 밴드(°C)
+  tsv_weight_scale: 0.5 # 가중치 (1 + scale*|TSV|)
+
+direction:
+  dt_norm: 0.2 # ΔT 정규화 기준(°C/step)
+
+# 에너지 보상 게이트(쾌적 확보 후에만 에너지 절약 학습)
+energy_gate:
+  enabled: true
+  min_all: 75.0 # 최저 쾌적 점수 임계
+  good_thresh: 80.0 # '좋음' 기준
+  pct_good: 0.80 # good_thresh 이상인 존 비율
+
+# 보상 가중치
+weights:
+  prog: 1.0
+  level: 0.30
+  fair: 0.30
+  energy: 0.00 # 초기엔 0; 게이트 ON 후 점진 상승 권장
+  hum: 0.20
+  co2: 0.15
+  act_delta: 0.02
+  act_use: 0.01
+  track: 0.25 # 목표 추적 보강
+  dir: 0.15 # TSV 방향성 보강
+
+lambdas:
+  ramp: 0.2
+  peak: 0.4

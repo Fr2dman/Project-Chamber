@@ -4,6 +4,12 @@ HVAC 시뮬레이터 단계별 테스트 및 분석 도구
 
 이 코드는 시뮬레이터의 동작을 단계별로 관찰하고 분석하는 도구입니다.
 """
+import sys, os
+
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from simulator.environment import AdvancedSmartACSimulator
 import numpy as np

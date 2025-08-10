@@ -1,8 +1,16 @@
 # test/test_tsv_rollout.py
-from simulator.environment import AdvancedSmartACSimulator
+import sys
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from simulator.environment import AdvancedSmartACSimulator
 
 # ===== 0) 설정 =====
 NUM_STEPS = 30

@@ -2,8 +2,11 @@
 import numpy as np
 import sys, os
 
-# 로컬 패키지 경로 세팅 (필요시 수정)
-sys.path.append(os.path.dirname(__file__) or ".")
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+# 이 파일의 상위 디렉토리(tests)의 상위 디렉토리(Project-Chamber)를 경로에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from simulator.environment import AdvancedSmartACSimulator  # 경로가 다르면 수정
 
@@ -20,7 +23,7 @@ def run_episode(sim, action, tsv, steps=25):
         rdir.append(float(rb.get("R_dir", 0.0)))
         rtrack.append(float(rb.get("R_track", 0.0)))
         temps_hist.append(np.array(info["sensor_readings"]["temperatures"], dtype=float))
-        power.append(float(info["hardware_states"]["total_power"]))
+        power.append(float(info["hardware_states"]["step_power_consumption"]))
         if done: break
     return {
         "R": np.array(rewards),

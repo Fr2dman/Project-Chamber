@@ -130,75 +130,182 @@ class JetModel:
         )
 
     반환값 : (4×4) ndarray — Q[i,j] 는 시간당 zone j → i 로 유입되는 체적유량(m³/s)
+
+    물리적 모델:
+    - 소형팬: 각 영역 상부에서 흡기 (슬롯 각도와 무관)
+    - 대형팬: 냉각된 공기를 토출
+    - 내부 슬롯: 각 영역으로의 토출 분배량 제어
+    - 외부 슬롯: 토출 방향 제어
+        * 0도(수평): 천장 따라 흐름 → 단순 순환(short-circuit)
+        * 80도(수직): 중심부 토출 → 전체 혼합
     """
 
-    K_AREA_INT = 1.3e-4    # 슬롯 면적 계수 (m²/deg)
+    # 하드웨어 사양
+    K_AREA_INT = 1.3e-4    # 내부 슬롯 면적 계수 (m²/deg)
     MAX_SMALL_RPM = 7000.0
     MAX_LARGE_RPM = 3300.0
-    DELTA_P_SMALL = 38.0  # Pa
-    LARGE_Q_MAX = 0.0382  # m³/s
+    SMALL_Q_MAX = 0.01     # m³/s per fan
+    LARGE_Q_MAX = 0.0382   # m³/s
     SMALL_FANS_PER_ZONE = 2
-    NATURAL_MIX_RATE = 0.01  # s⁻¹
+    
+    # 혼합 파라미터
+    NATURAL_MIX_RATE = 0.01    # s⁻¹ (기본 자연 혼합)
+    SHORT_CIRCUIT_RATE = 0.8   # 단순 순환 시 재흡기 비율
+    MIXING_ENHANCEMENT = 3.0    # 수직 토출 시 혼합 증대 계수
 
-    def __init__(self, num_zones: int = 4, max_ext_angle: float = 80.0, c_d: float = 0.8):
+    def __init__(self, num_zones: int = 4, c_d: float = 0.8):
         self.n = num_zones
         self.c_d = c_d
-        self.max_ext_angle = max_ext_angle
-        self.last_Q_fan = None
-        self.last_Q_nat = None
+        self.last_Q_intake = None
+        self.last_Q_supply = None
+        self.last_Q_matrix = None
+        self.last_recirculation_ratio = None
 
     def _slot_area_int(self, theta: float) -> float:
         return max(0.0, theta) * self.K_AREA_INT
-
+    
     def get_flow_matrix(
         self,
-        fan_rpms_S: Sequence[float],
-        fan_rpms_L: float,
-        theta_int: Sequence[float],
-        theta_ext: Sequence[float]
-    ) -> np.ndarray:
+        fan_rpms_S: np.ndarray,  # 소형팬 RPM (각 존)
+        fan_rpms_L: float,       # 대형팬 RPM
+        theta_int: np.ndarray,   # 내부 슬롯 각도 (0-45°)
+        theta_ext: np.ndarray,   # 외부 슬롯 각도 (0-80°)
+        dt: float = 1.0,         # 시간 간격
+    ) -> tuple[np.ndarray, dict]:
+        """
+        유량 행렬 계산
+        
+        Returns:
+            Q_matrix: (N×N) 존간 유량 행렬 [m³/s]
+                    Q[i,j] = j→i 유량
+            info: 디버깅/분석용 추가 정보
+        """
+        # --- 입력 타입 강제 ---
         fan_rpms_S = np.asarray(fan_rpms_S, dtype=float)
         theta_int = np.asarray(theta_int, dtype=float)
         theta_ext = np.asarray(theta_ext, dtype=float)
 
-        # 1) 존별 흡기 유량 (소형팬)
-        q_intake = np.zeros(self.n)
-        for i in range(self.n):
-            area_int = self._slot_area_int(theta_int[i])
-            eff_dp = self.DELTA_P_SMALL * (fan_rpms_S[i] / self.MAX_SMALL_RPM)
-            v = np.sqrt(max(0.0, 2 * eff_dp / 1.2))
-            q_intake[i] = self.c_d * area_int * v * self.SMALL_FANS_PER_ZONE
-
-        # 2) 대형팬 토출 용량 제한
+        # ========================================
+        # 1) 흡기 단계: 소형팬에 의한 각 존별 흡기
+        # ========================================
+        fan_ratio = fan_rpms_S / self.MAX_SMALL_RPM
+        q_intake = self.SMALL_Q_MAX * fan_ratio * self.SMALL_FANS_PER_ZONE
         total_intake = q_intake.sum()
-        large_cap = self.LARGE_Q_MAX * (fan_rpms_L / self.MAX_LARGE_RPM)
-        scale = min(1.0, large_cap / total_intake) if total_intake > 0 else 0.0
-        q_supply = q_intake * scale
 
-        # 3) 외부 슬롯(theta_ext)에 따른 자연 혼합 조정
-        # theta_ext: 0(천장 수평)~max_ext_angle(지면 수직)
-        # ext_factor: 각 존의 바람 방향에 따른 직접 전달 비율
-        ext_factor = np.clip(theta_ext / self.max_ext_angle, 0.0, 1.0)
+        # ========================================
+        # 2) 토출 용량: 대형팬 제약
+        # ========================================
+        large_capacity = self.LARGE_Q_MAX * (fan_rpms_L / self.MAX_LARGE_RPM)
+        actual_throughput = min(total_intake, large_capacity) if total_intake > 0 else 0.0
 
-        # 4) 팬 공급 행렬 (대각)
-        Q_fan = np.diag(q_supply)
+        # ========================================
+        # 3) 내부 슬롯에 의한 분배
+        # ========================================
+        slot_areas = np.maximum(theta_int * self.K_AREA_INT, 1e-6)
 
-        # 5) 자연 혼합 행렬 (기존 Q_nat에서 컬럼별 스케일링)
-        if self.n > 1:
-            vol = DEFAULT_ZONE_VOL
-            natural = self.NATURAL_MIX_RATE * vol
-            base_nat = natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
-            # JetModel: ext_factor 로 감쇠하되, 행·열 모두 곱해 대칭 유지
-            Q_nat = base_nat * np.sqrt((1 - ext_factor)[None, :] * (1 - ext_factor)[:, None])
+        # 외부 슬롯 완전 닫힘 가정(-5° 이하) 시 해당 존 토출 0
+        is_closed = theta_ext < -5
+        slot_areas = np.where(is_closed, 0.0, slot_areas)
+
+        if slot_areas.sum() > 0:
+            distribution_ratio = slot_areas / slot_areas.sum()
         else:
-            Q_nat = np.zeros((1, 1))
+            distribution_ratio = np.zeros(self.n)
 
+        q_supply = actual_throughput * distribution_ratio  # 슬롯으로 각 존에 공급되는 양(열 기준 총합 = actual_throughput)
+
+        # ========================================
+        # 4) 외부 슬롯 각도에 따른 재흡기 + 혼합
+        # ========================================
+        # 4-1) 재흡기 비율 (0° 수평 클수록 ↑, 80° 수직일수록 ↓)
+        angle_rad_recirc = np.deg2rad(theta_ext)
+        recirc_ratio = self.SHORT_CIRCUIT_RATE * np.cos(angle_rad_recirc)
+        recirc_ratio = np.where(q_supply > 0, recirc_ratio, 0.0)  # 공급 없는 존은 0
+
+        # 실내 유입 유량(재흡기 제외)
+        q_to_room = q_supply * (1.0 - recirc_ratio)
+
+        # 4-2) 혼합 강도(0~1): 0°≈0, 80°≈1 (상한 클립)
+        angle_rad_mix = np.deg2rad(theta_ext)
+        mixing_factor = np.clip(np.sin(angle_rad_mix) * self.MIXING_ENHANCEMENT, 0.0, 1.0)
+
+        # 자기 존 직류(keep)과 혼합 몫 분리
+        q_self_direct = (1.0 - mixing_factor) * q_to_room        # 자기 존에 남는 양
+        q_mix_out     = mixing_factor * q_to_room                 # 이웃(및 자기 포함)으로 섞을 총량
+
+        # 대각: 자기 존 직류
+        Q_direct = np.diag(q_self_direct)
+
+        # 2×2 레이아웃 인접행렬(상하좌우) + 자기 존 포함 균등 분배
+        if self.n == 4:
+            neighbors_map = {0: [1, 2], 1: [0, 3], 2: [0, 3], 3: [1, 2]}
+        else:
+            neighbors_map = {i: [j for j in range(self.n) if j != i] for i in range(self.n)}
+
+        Q_mix = np.zeros((self.n, self.n))
+        for j in range(self.n):  # 출발 존(열)
+            mixed_amount = q_mix_out[j]
+            if mixed_amount <= 0:
+                continue
+            targets = [j] + neighbors_map[j]   # 자기 + 인접
+            weights = np.ones(len(targets), dtype=float)
+            weights /= weights.sum()           # '비슷하게' 분배 → 균등 가중치
+            for k, i in enumerate(targets):    # 도착 존(행)
+                Q_mix[i, j] += mixed_amount * weights[k]
+
+        # 재흡기 행렬(참고용; 실내 유동 합산에서는 제외)
+        Q_recirc = np.diag(q_supply * recirc_ratio)
+
+        # ========================================
+        # 5) 자연 혼합 (확산) — 내부 교환
+        # ========================================
+        vol = DEFAULT_ZONE_VOL  # m³
+        natural = self.NATURAL_MIX_RATE * vol
+        if self.n > 1:
+            Q_natural = natural * (np.ones((self.n, self.n)) - np.eye(self.n)) / (self.n - 1)
+        else:
+            Q_natural = np.zeros((1, 1))
+
+        # ========================================
         # 6) 최종 유량 행렬
-        Q_total = Q_fan + Q_nat
-        self.last_Q_fan = Q_fan
-        self.last_Q_nat = Q_nat
-        return Q_total
+        # ========================================
+        # 강제유동(팬 기인)만 먼저 합산
+        Q_forced = Q_direct + Q_mix          # (실내 유동) = 자기 직류 + 혼합
+        # 최종(내부 확산 추가)
+        Q_total = Q_forced + Q_natural
 
+        # 질량 보존 검증 (열 기준: 강제유동 열합 == q_to_room)
+        col_err = Q_forced.sum(axis=0) - q_to_room
+        mass_balance_error = float(np.max(np.abs(col_err)))
+        if mass_balance_error > 1e-6:
+            print(f"[warn] forced_col_max_err = {mass_balance_error:.6g}")
+
+        # ========================================
+        # 7) 상태 저장 및 반환
+        # ========================================
+        self.last_Q_intake = q_intake
+        self.last_Q_supply = q_supply
+        self.last_Q_matrix = Q_total
+        self.last_recirculation_ratio = recirc_ratio
+
+        info = {
+            'q_intake': q_intake,
+            'q_supply': q_supply,
+            'q_to_room': q_to_room,
+            'q_self_direct': q_self_direct,
+            'q_mix_out': q_mix_out,
+            'recirculation_ratio': recirc_ratio,
+            'mixing_factor': mixing_factor,
+            'Q_direct': Q_direct,
+            'Q_recirc': Q_recirc,
+            'Q_mix': Q_mix,
+            'Q_natural': Q_natural,
+            'Q_forced': Q_forced,
+            'mass_balance_error': mass_balance_error,
+            'actual_throughput': actual_throughput,
+        }
+
+        return Q_total, info
 
 
 # -----------------------------------------------------------------------------
@@ -211,16 +318,16 @@ class PhysicsSimulator:
         self.n = num_zones
         self.zone_volumes = np.asarray([DEFAULT_ZONE_VOL] * num_zones if zone_volumes is None else zone_volumes)
         # 상태 변수 초기화
-        # self.T = np.random.uniform(22, 28, size=self.n)
-        # self.H = np.random.uniform(40, 60, size=self.n)
-        # self.CO2 = np.random.uniform(400, 800, size=self.n)
-        # self.Dust = np.random.uniform(0, 10, size=self.n)
+        self.T = np.random.uniform(22, 28, size=self.n)
+        self.H = np.random.uniform(40, 60, size=self.n)
+        self.CO2 = np.random.uniform(400, 800, size=self.n)
+        self.Dust = np.random.uniform(0, 10, size=self.n)
 
         # 초기 상태 (예시)
-        self.T = np.full(self.n, 28.0)  # 초기 온도 (°C)
-        self.H = np.full(self.n, 70.0)  # 초기 습도 (%RH)
-        self.CO2 = np.full(self.n, 400.0)  # 초기 CO2 농도 (ppm)
-        self.Dust = np.full(self.n, 0.0)  # 초기 미세먼지 농도 (μg/m³)
+        # self.T = np.full(self.n, 28.0)  # 초기 온도 (°C)
+        # self.H = np.full(self.n, 70.0)  # 초기 습도 (%RH)
+        # self.CO2 = np.full(self.n, 400.0)  # 초기 CO2 농도 (ppm)
+        # self.Dust = np.full(self.n, 0.0)  # 초기 미세먼지 농도 (μg/m³)
 
         # Ambient conditions
         self.ambient_temp = AMBIENT_TEMP
@@ -351,11 +458,11 @@ class PhysicsSimulator:
         external_angles = np.asarray(external_angles)
 
         # 1) 공기 유량 행렬
-        Q_matrix = self.jet.get_flow_matrix(fan_rpms_S, fan_rpms_L, internal_angles, external_angles)
+        Q_matrix, q_info = self.jet.get_flow_matrix(fan_rpms_S, fan_rpms_L, internal_angles, external_angles)
         # 1.5) 팬 유량 (펠티어 냉각 분배용)
-        fan_flows_zone = np.diag(self.jet.last_Q_fan)                 # (N,) m³/s
+        fan_flows_zone = self.jet.last_Q_intake                      # (N,) m³/s
         fan_mass_flow  = fan_flows_zone.sum() * RHO_AIR               # kg/s
-        intake_temp = float((fan_flows_zone @ temps) / (fan_flows_zone.sum()+1e-9))
+        intake_temp = float(np.dot(fan_flows_zone, temps) / (fan_flows_zone.sum() + 1e-9))
 
         abs_hum = humidities/100.0 * ZoneEnergyBalance._Ws(temps)
 
@@ -407,8 +514,8 @@ class PhysicsSimulator:
 
         # ---- CO₂ & Dust 간단 환기 모델 ----
         # 권장 (팬 배출 유량만 반영):
-        fan_out = np.diag(self.jet.last_Q_fan)              # m³/s per zone
-        decay   = np.clip(fan_out / self.zone_volumes, 0, 0.2)
+        fan_out = self.jet.last_Q_supply  # 공급 유량이 환기량과 같다고 가정
+        decay = np.clip(fan_out / self.zone_volumes, 0, 0.2)
         self.CO2 = 350 + (self.CO2 - 350) * np.exp(-decay * dt)
         self.Dust = np.maximum(0, self.Dust * np.exp(-decay * dt) + np.random.normal(0, 0.05, size=self.n))
 

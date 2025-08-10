@@ -9,7 +9,13 @@ HVAC 시뮬레이터 종합 테스트 코드 (v2.0)
 - 성능 지표 및 안전성 검증
 - 에너지 효율성 분석
 """
+import sys, os
 
+# 프로젝트 루트 디렉토리를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    
 import numpy as np
 # 기존의 복잡한 한글 폰트 설정 코드를 모두 제거하고 다음으로 대체:
 import matplotlib.pyplot as plt
@@ -114,7 +120,7 @@ class MockSimulator:
                 'average_comfort': 85.0
             },
             'hardware_states': {
-                'total_power': np.random.uniform(50, 150)
+                'step_power_consumption': np.random.uniform(50, 150)
             },
             'reward_breakdown': {
                 'comfort': 0.8,
@@ -147,24 +153,8 @@ class HVACSimulatorTester:
         # 테스트 결과 저장
         self.test_results = {}
         self.performance_metrics = {}
-        self.current_data = {
-            'step': [],
-            'timestamps': [],
-            'temperatures': [[] for _ in range(num_zones)],
-            'humidities': [[] for _ in range(num_zones)],
-            'comfort_scores': [[] for _ in range(num_zones)],
-            'co2_levels': [[] for _ in range(num_zones)],
-            'dust_levels': [[] for _ in range(num_zones)],
-            'power_consumption': [],
-            'actions': [],
-            'rewards': [],
-            'reward_breakdown': {
-                'comfort': [],
-                'temp_penalty': [],
-                'humidity_penalty': [],
-                'power_penalty': []
-            }
-        }
+        self.current_data = {} # _reset_data에서 초기화
+        self._reset_data()
         
         # 시각화 설정
         plt.style.use('seaborn-v0_8' if 'seaborn-v0_8' in plt.style.available else 'default')
@@ -434,7 +424,7 @@ class HVACSimulatorTester:
                 temps = info['sensor_readings']['temperatures']
                 avg_temp = np.mean(temps)
                 comfort = info['comfort_data']['average_comfort']
-                power = info['hardware_states']['total_power']
+                power = info['hardware_states']['step_power_consumption']
                 
                 print(f"Step {step:3d}/{scenario.duration_steps}: "
                       f"Temp={avg_temp:5.1f}°C, "
@@ -487,12 +477,7 @@ class HVACSimulatorTester:
             'power_consumption': [],
             'actions': [],
             'rewards': [],
-            'reward_breakdown': {
-                'comfort': [],
-                'temp_penalty': [],
-                'humidity_penalty': [],
-                'power_penalty': []
-            }
+            'reward_breakdown': {}
         }
     
     def _save_step_data(self, step: int, info: Dict, action: np.ndarray, 
@@ -511,13 +496,13 @@ class HVACSimulatorTester:
             self.current_data['dust_levels'][i].append(sensor_data['dust_levels'][i])
         
         # 시스템 데이터
-        self.current_data['power_consumption'].append(info['hardware_states']['total_power'])
+        self.current_data['power_consumption'].append(info['hardware_states']['step_power_consumption'])
         self.current_data['actions'].append(action.copy())
         self.current_data['rewards'].append(reward)
         
         # 보상 분해
         for key, value in info['reward_breakdown'].items():
-            self.current_data['reward_breakdown'][key].append(value)
+            self.current_data['reward_breakdown'].setdefault(key, []).append(value)
     
     def _check_safety(self, info: Dict) -> int:
         """안전 위반 사항 검사"""
@@ -536,7 +521,7 @@ class HVACSimulatorTester:
                 violations += 1
         
         # 전력 소비 한계
-        power = info['hardware_states']['total_power']
+        power = info['hardware_states']['step_power_consumption']
         if power > self.safety_limits['power']:
             violations += 1
         
@@ -639,7 +624,7 @@ class HVACSimulatorTester:
             steady_state_error = abs(zone_0_temps[-1] - scenario.target_temp) if len(zone_0_temps) > 0 else 0
         
         # 안전 위반 횟수
-        safety_violations = sum([self._check_safety({'sensor_readings': {'temperatures': [data['temperatures'][i][j] for i in range(self.num_zones)], 'humidities': [data['humidities'][i][j] for i in range(self.num_zones)]}, 'hardware_states': {'total_power': data['power_consumption'][j]}}) for j in range(len(data['step']))])
+        safety_violations = sum([self._check_safety({'sensor_readings': {'temperatures': [data['temperatures'][i][j] for i in range(self.num_zones)], 'humidities': [data['humidities'][i][j] for i in range(self.num_zones)]}, 'hardware_states': {'step_power_consumption': data['power_consumption'][j]}}) for j in range(len(data['step']))])
         
         return PerformanceMetrics(
             temperature_rmse=temp_rmse,
@@ -863,7 +848,7 @@ class HVACSimulatorTester:
         
         # 6. 보상 구성 요소
         ax6 = axes[1, 2]
-        if data['reward_breakdown']['comfort']:
+        if data['reward_breakdown']:
             for component, values in data['reward_breakdown'].items():
                 if values:
                     ax6.plot(time_minutes, values, label=component.replace('_', ' ').title(), linewidth=2)
