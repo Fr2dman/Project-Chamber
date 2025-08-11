@@ -32,8 +32,8 @@ direction:
 # 에너지 보상 게이트(쾌적 확보 후에만 에너지 절약 학습)
 energy_gate:
   enabled: true
-  min_all: 75.0 # 최저 쾌적 점수 임계
-  good_thresh: 80.0 # '좋음' 기준
+  min_all: 78.0 # 최저 쾌적 점수 임계
+  good_thresh: 85.0 # '좋음' 기준
   pct_good: 0.80 # good_thresh 이상인 존 비율
 
 # 보상 가중치
@@ -44,9 +44,9 @@ weights:
   energy: 0.00 # 초기엔 0; 게이트 ON 후 점진 상승 권장
   hum: 0.20
   co2: 0.15
-  act_delta: 0.02
+  act_delta: 0.05
   act_use: 0.01
-  track: 0.25 # 목표 추적 보강
+  track: 1.0 # 목표 추적 보강
   dir: 0.15 # TSV 방향성 보강
 
 lambdas:
