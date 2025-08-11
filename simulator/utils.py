@@ -87,7 +87,7 @@ class ZoneComfortCalculator:
     def _fallback_comfort(temp: float, rh: float) -> float:
         """온도·습도 기반 간단 점수 (0–100). 중심 목표 24 °C·50 % RH."""
         # 온도 편차 penalty (1 °C당 4점)
-        temp_pen = 4.0 * abs(temp - 24.0)
+        temp_pen = 4.0 * abs(temp - 25.0)
         # RH penalty : 30–70 % 구간을 허용, 바깥은 1 %당 0.5점
         if rh < 30:
             rh_pen = 0.5 * (30 - rh)

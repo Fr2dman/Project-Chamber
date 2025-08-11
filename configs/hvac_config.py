@@ -21,7 +21,7 @@ ZONE_LAYOUT = {
 # ---------------- 목표 조건 ----------------
 TARGET_TEMP_C: float = 25.0   # °C
 TARGET_RH_PCT: float = 50.0   # % RH
-COMFORT_THRESHOLD: float = 80.0  # Comfort score 목표(0–100)
+COMFORT_THRESHOLD: float = 85.0  # Comfort score 목표(0–100)
 
 target_conditions = {
     "temperature": [TARGET_TEMP_C] * NUM_ZONES,
@@ -101,9 +101,9 @@ LEVEL_MODE = "threshold"
 # Reward weights (트래킹/TSV 강조 프로파일; 에너지 게이트로 관리)
 RW = {
     "prog": 1.0, "level": 0.30, "fair": 0.30,
-    "energy": 0.00, "hum": 0.20, "co2": 0.15,
-    "act_delta": 0.02, "act_use": 0.01,
-    "track": 0.25,     # ↑ 트래킹 비중 확대
+    "energy": 0.8, "hum": 0.25, "co2": 0.15,
+    "act_delta": 0.05, "act_use": 0.01, 'beta': 0.20,
+    "track": 1.0,     # ↑ 트래킹 비중 확대
     "dir": 0.15        # ↑ TSV 방향성 보조
 }
 LAMBDA_RAMP = 0.2
@@ -128,7 +128,7 @@ AIR_VEL = {
     "A_SMALL": 0.65,   # 소형팬 가중
     "B_LARGE": 0.55,   # 대형팬 가중
     "VMIN": 0.10,
-    "VMAX": 1.20,
+    "VMAX": 0.80,
     "ANGLE_MODE": "linear"  # 'linear' | 'cos'
 }
 

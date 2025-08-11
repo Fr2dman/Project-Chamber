@@ -9,7 +9,7 @@ from simulator.utils import ZoneComfortCalculator
 from configs.hvac_config import (
     target_conditions, safety_limits, CONTROL_TERM, COMFORT_REF, USE_TSV_HYBRID,
     K_TSV, CLAMP_T_EFF_TO_SAFETY, LEVEL_MODE, AIR_VEL, SERVO_EXTERNAL_RANGE,
-    TSV_DEADBAND, TSV_SIM,T_EFF_EMA_ALPHA
+    TRACK_BAND, TSV_DEADBAND, TSV_SIM,T_EFF_EMA_ALPHA
 )
 
 class AdvancedSmartACSimulator:
@@ -71,6 +71,7 @@ class AdvancedSmartACSimulator:
 
         # --- 보상 계산 보조 변수 ---
         self.prev_temps = np.zeros(self.num_zones, dtype=float)
+        self.prev_hum   = np.zeros(self.num_zones, dtype=float)  # ΔRH⁺ 계산용
         self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float) # 이 변수는 현재 보상계산에 사용되지 않음
         self.prev_action = np.zeros(self.action_dim, dtype=float)
         self.prev_power = 0.0
@@ -92,7 +93,6 @@ class AdvancedSmartACSimulator:
             return
         mode = TSV_SIM.get("mode", "absolute")  # "absolute" | "hybrid"
         if mode == "hybrid" and T_eff is not None:
-            from configs.hvac_config import TRACK_BAND
             band = max(float(TRACK_BAND), 1e-6)
             hot_excess  = np.maximum(0.0, temps - (T_eff + 0.5 * band))
             cold_excess = np.maximum(0.0, (T_eff - 0.5 * band) - temps)
@@ -144,6 +144,7 @@ class AdvancedSmartACSimulator:
 
         # 보조 변수 리셋
         self.prev_temps = self.physics_sim.T.copy()
+        self.prev_hum   = self.physics_sim.H.copy()
         self.prev_fan_pwm.fill(0)
         self.prev_action = self.off_action.copy()
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
@@ -188,17 +189,24 @@ class AdvancedSmartACSimulator:
 
     # -----------------------
     # 4.2 Helper: 하이브리드 목표 T_eff 계산(EMA 포함)
-    # -----------------------
+    # -----------------------    
     def _compute_T_eff(self, T_target: np.ndarray) -> np.ndarray:
         tsv = np.asarray(self.current_tsv, dtype=float)
         if not USE_TSV_HYBRID:
             return T_target
+        # ① TSV 반영(데드밴드 포함)
         tsv_adj = np.sign(tsv) * np.maximum(np.abs(tsv) - float(TSV_DEADBAND), 0.0)
-        T_eff_raw = T_target - float(K_TSV) * tsv_adj  # TSV>0(덥다) → 목표 낮춤
+        # ② 이동 한도: 세트포인트 ±0.5·TRACK_BAND 안으로만 이동 허용
+        band = float(TRACK_BAND)
+        delta = - float(K_TSV) * tsv_adj
+        delta = np.clip(delta, -0.5*band, +0.5*band)
+        T_eff_raw = T_target + delta
+        # ③ 안전 클램프(기존)
         if CLAMP_T_EFF_TO_SAFETY:
             tmin = safety_limits["temperature"]["min"]
             tmax = safety_limits["temperature"]["max"]
             T_eff_raw = np.clip(T_eff_raw, tmin, tmax)
+        # ④ EMA 완화: 목표 급변 방지(예: alpha 0.1→0.05)
         alpha = float(T_EFF_EMA_ALPHA)
         return (1.0 - alpha) * self.prev_T_eff + alpha * T_eff_raw
 
@@ -261,6 +269,7 @@ class AdvancedSmartACSimulator:
 
         # 5.6 next‑state 준비 (prev_* 업데이트)
         self.prev_temps = np.array(sensor_readings['temperatures'])
+        self.prev_hum   = np.array(sensor_readings['humidities'])
         self.prev_fan_pwm = np.array(action_dict['small_fan_pwm'])
         self.time_step += 1
 
@@ -446,12 +455,11 @@ class AdvancedSmartACSimulator:
             g_energy = 1.0
 
         # ------------------------------
-        # 3) 습도/CO2 제약 (완화형 패널티)
+        # 3) CO2 제약 (완화형 패널티) - 습도는 따로
         # ------------------------------
         hum = np.asarray(sensor_readings["humidities"], dtype=float)
         co2 = np.asarray(sensor_readings["co2_levels"], dtype=float)
-
-        R_hum = -float(np.mean(dist_to_band(hum, HUMIDITY_BAND[0], HUMIDITY_BAND[1]) / 10.0))
+        # R_hum = -float(np.mean(dist_to_band(hum, HUMIDITY_BAND[0], HUMIDITY_BAND[1]) / 10.0))
         R_co2 = -float(np.mean(np.clip((co2 - CO2_REF) / CO2_REF, 0.0, None)))
 
         # ------------------------------
@@ -508,7 +516,7 @@ class AdvancedSmartACSimulator:
         w_track = w * (1.0 + float(TRACK_TSV_WEIGHT_SCALE) * np.abs(tsv))
         w_sum = float(np.sum(w_track)) if float(np.sum(w_track)) > 0 else 1.0
         R_track = 1.0 - float(np.clip(np.sum(w_track * err) / w_sum, 0.0, 1.0))
-
+        
         # (b) TSV 방향성: TSV>0(덥다)면 ΔT<0, TSV<0(춥다)면 ΔT>0가 좋음 (ΔT 정규화/클립)
         delta_T_norm = (temps - self.prev_temps) / max(float(DIR_DT_NORM), 1e-6)
         delta_T_norm = np.clip(delta_T_norm, -1.0, 1.0)
@@ -517,19 +525,28 @@ class AdvancedSmartACSimulator:
         # 재실 가중치 평균으로 스케일 안정화
         w_sum_dir = float(np.sum(w)) if float(np.sum(w)) > 0 else 1.0
         R_dir = float(np.sum(w * (- tsv_sign * delta_T_norm)) / w_sum_dir)
+        # -> (b) [반영 안함] TSV 방향성 항은 R_track과 목적 중복 → 제거
+
+        # (c) 습도 가드레일(상한 힌지) + 근접 게이트 ΔRH⁺
+        RH_hi = float(HUMIDITY_BAND[1])
+        H_up = float(np.mean(np.clip(hum - RH_hi, 0.0, None) / 20.0))
+        D_T = float(np.mean(err))                     # 목표 근접도 (0~1)
+        g_h = 1.0 if D_T < 0.30 else 0.0             # 근접 게이트
+        dRH_pos = float(np.mean(np.clip(hum - self.prev_hum, 0.0, None) / 5.0))
+        R_hum = -(H_up + 0.20 * g_h * dRH_pos)       # 음수(벌점)로 정의
 
         # ------------------------------
         # 6) 가중합
         # ------------------------------
         reward = (
-            RW["prog"]      * R_prog   +
-            RW["level"]     * R_level  +
-            RW["fair"]      * R_fair   +
+            # RW["prog"]      * R_prog   +
+            # RW["level"]     * R_level  +
+            # RW["fair"]      * R_fair   +
             RW["energy"]    * R_energy +
             RW["hum"]       * R_hum    +
             RW["co2"]       * R_co2    +
             RW["act_delta"] * R_act_delta +
-            RW["act_use"]   * R_act_use +
+            # RW["act_use"]   * R_act_use +
             RW.get("track", 0.0) * R_track +     # (NEW)
             RW.get("dir",   0.0) * R_dir   +     # (NEW)
             R_safe
