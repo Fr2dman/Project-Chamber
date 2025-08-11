@@ -42,6 +42,25 @@ class HVACStepTester:
         self.test_history: List[TestResult] = []
         self.current_step = 0
         
+        # 보상 구성 요소 설명
+        self.reward_descriptions = {
+            'R_prog': '쾌적도 개선 진행',
+            'R_level': '쾌적도 목표 수준',
+            'R_fair': '존 간 쾌적도 공정성',
+            'R_energy': '에너지 소비',
+            'R_hum': '습도 범위 유지',
+            'R_co2': 'CO2 농도',
+            'R_act_delta': '액추에이터 변화량',
+            'R_act_d': '액추에이터 변화량',
+            'R_act_use': '액추에이터 사용량',
+            'R_act_u': '액추에이터 사용량',
+            'R_track': 'TSV 기반 목표 추적',
+            'R_dir': 'TSV 방향성',
+            'R_safety': '안전 한계 위반',
+            'T_eff': '하이브리드 목표 온도',
+            'reward': '최종 가중합 보상',
+        }
+        
         # 액션 구성 가이드
         self.action_guide = {
             'peltier_control': {'index': 0, 'range': (-1, 1), 'description': '펠티어 제어 (-1:OFF, +1:최대냉각)'},
@@ -182,6 +201,38 @@ class HVACStepTester:
         print(f"   • 소형팬: {[f'{a:+.2f}' for a in action[9:13]]}")
         print(f"   • 대형팬: {action[13]:+.2f}")
     
+    def _print_reward_breakdown(self, breakdown: Dict):
+        """보상 상세 내역을 보기 좋게 출력합니다."""
+        print("     - 보상 상세:")
+        
+        # 주요 항목 순서 정의
+        order = [
+            'R_prog', 'R_level', 'R_fair', 'R_track', 'R_dir', 
+            'R_energy', 'R_hum', 'R_co2', 
+            'R_act_delta', 'R_act_d', 'R_act_use', 'R_act_u', 
+            'R_safety',
+            'reward', 'T_eff'
+        ]
+        
+        # 정렬된 아이템 리스트 생성
+        sorted_items = sorted(
+            breakdown.items(),
+            key=lambda item: order.index(item[0]) if item[0] in order else len(order)
+        )
+        
+        for key, value in sorted_items:
+            desc = self.reward_descriptions.get(key, "기타 항목")
+            # 값의 타입에 따라 포맷팅을 다르게 적용
+            if isinstance(value, (float, int, np.number)):
+                print(f"       • {key:<12s}: {value: 8.4f}  ({desc})")
+            elif isinstance(value, list):
+                # 리스트는 각 요소를 소수점 2자리까지 표시
+                value_str = ", ".join([f"{v:.2f}" for v in value])
+                print(f"       • {key:<12s}: [{value_str}]  ({desc})")
+            else:
+                # 그 외 타입은 문자열로 변환하여 출력
+                print(f"       • {key:<12s}: {str(value)}  ({desc})")
+    
     def _print_step_result(self, result: TestResult):
         """스텝 결과 출력"""
         sr = result.sensor_readings
@@ -193,9 +244,10 @@ class HVACStepTester:
         print(f"   • 온도 변화: {[f'{t:.1f}°C' for t in sr['temperatures']]}")
         print(f"   • 습도 변화: {[f'{h:.1f}%' for h in sr['humidities']]}")
         print(f"   • 쾌적도: {[f'{c:.1f}' for c in cd['comfort_scores']]} (평균: {cd['average_comfort']:.1f})")
-        print(f"   • 소비전력: {hs['total_power']:.1f}W")
-        print(f"   • 보상: {result.reward:.3f} (쾌적:{rb['comfort']:.3f}, 전력:{rb['power_penalty']:.3f})")
-    
+        print(f"   • 소비전력: {hs['step_power_consumption']:.1f}W")
+        print(f"   • 보상: {result.reward:.3f}")
+        self._print_reward_breakdown(rb)
+        
     def analyze_temperature_trend(self, steps: int = None) -> Dict:
         """온도 변화 추세 분석"""
         if not self.test_history:
@@ -276,7 +328,7 @@ class HVACStepTester:
         
         # 4. 전력 소비
         ax = axes[1, 0]
-        powers = [r.hardware_states['total_power'] for r in data]
+        powers = [r.hardware_states['step_power_consumption'] for r in data]
         ax.plot(step_nums, powers, color='orange', linewidth=2)
         ax.set_xlabel('Step')
         ax.set_ylabel('Power (W)')
@@ -334,7 +386,7 @@ class HVACStepTester:
             row = {
                 'step': result.step,
                 'reward': result.reward,
-                'total_power': result.hardware_states['total_power'],
+                'total_power': result.hardware_states['step_power_consumption'],
             }
             
             # 액션 데이터
@@ -409,9 +461,12 @@ def example_basic_test():
     
     # 여러 스텝 테스트
     actions = [
-        tester.create_action(peltier=0.2, small_fans=[0.3, 0.3, 0.3, 0.3]),
-        tester.create_action(peltier=0.5, small_fans=[0.6, 0.6, 0.6, 0.6]),
-        tester.create_action(peltier=0.8, small_fans=[0.9, 0.9, 0.9, 0.9]),
+        tester.create_action(peltier=0.2, internal_servos=[0.0, 0.0, 0.0, 0.0],
+                              external_servos=[0.0, 0.0, 0.0, 0.0], small_fans=[0.6, 0.6, 0.6, 0.6]),
+        tester.create_action(peltier=0.5, internal_servos=[0.0, 0.0, 0.0, 0.0],
+                              external_servos=[0.0, 0.0, 0.0, 0.0],small_fans=[0.6, 0.6, 0.6, 0.6]),
+        tester.create_action(peltier=0.8, internal_servos=[0.0, 0.0, 0.0, 0.0],
+                              external_servos=[0.0, 0.0, 0.0, 0.0],small_fans=[0.6, 0.6, 0.6, 0.6]),
     ]
     
     results = tester.run_multiple_steps(actions)

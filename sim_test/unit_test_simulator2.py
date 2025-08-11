@@ -111,7 +111,7 @@ class HVACSimulatorTester:
             
             temps = state_info['sensor_readings']['temperatures']
             action = np.zeros(14)
-            action[0] = 0.5  # 펠티어 기본값
+            action[0] = 0.0  # 펠티어 기본값
             
             int_servos, ext_servos, small_fans = [], [], []
             

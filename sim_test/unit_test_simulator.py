@@ -106,9 +106,9 @@ time_axis = np.arange(trajectory_T.shape[0]) * sim.dt / 60  # minutes
 fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
 for z in zones:
     axes[0].plot(time_axis, trajectory_T[:, z], label=f"Zone {z} (Sensor)")
-    axes[0].plot(time_axis, trajectory_T_phys[:, z], label=f"Zone {z} (Physical)", linestyle='--', alpha=0.7)
+    # axes[0].plot(time_axis, trajectory_T_phys[:, z], label=f"Zone {z} (Physical)", linestyle='--', alpha=0.7)
 axes[0].set_ylabel("Temperature (°C)")
-axes[0].set_title("Zone Temperatures over Time (Sensor vs. Physical)")
+axes[0].set_title("Zone Temperatures over Time (Sensor)")# vs. Physical
 axes[0].legend(); axes[0].grid(True)
 
 for z in zones:
