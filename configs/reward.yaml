@@ -38,15 +38,17 @@ energy_gate:
 
 # 보상 가중치
 weights:
+  track: 1.0 # 목표 추적 보강
+  alloc: 0.8
+  cool_align: 0.2
+  hum: 0.25
   prog: 1.0
   level: 0.30
   fair: 0.30
   energy: 0.00 # 초기엔 0; 게이트 ON 후 점진 상승 권장
-  hum: 0.20
-  co2: 0.15
+  co2: 0.00
   act_delta: 0.05
   act_use: 0.01
-  track: 1.0 # 목표 추적 보강
   dir: 0.15 # TSV 방향성 보강
 
 lambdas:

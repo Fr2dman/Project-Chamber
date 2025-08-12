@@ -12,7 +12,7 @@ from simulator.environment import AdvancedSmartACSimulator
 
 # ===== 설정 =====
 # TSV 시나리오: 한 번의 step에서 주입할 TSV (존 수와 길이 동일)
-TSV_VALUES = [0.0, 0.0, 0.0, 0.0]   # "춥다" 피드백 (cold_all)
+TSV_VALUES = [-2.0, -2.0, -3.0, 1.0]   # "춥다" 피드백 (cold_all)
 
 # 액션 벡터(14차원, [-1, 1]): [peltier, 4x internal, 4x external, 4x small fans, large fan]
 # 아래는 'max_cool' 예시
@@ -105,7 +105,7 @@ def main():
         print("외부 슬롯(각도):", [f"{a:.1f}°" for a in hw["servos"]["external"]])
         print("소형 팬 RPM:", [str(int(f["rpm"])) for f in hw["fans"]["small_fans"]])
         print("대형 팬 RPM:", int(hw["fans"]["large_fan"]["rpm"]))
-        print("소비 전력(W):", f"{hw.get('total_power', float('nan')):.2f}")
+        print("소비 전력(W):", f"{hw.get('step_energy_Wh', float('nan')):.2f}")
     except Exception:
         pass
 

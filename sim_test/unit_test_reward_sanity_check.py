@@ -23,7 +23,7 @@ def run_episode(sim, action, tsv, steps=25):
         rdir.append(float(rb.get("R_dir", 0.0)))
         rtrack.append(float(rb.get("R_track", 0.0)))
         temps_hist.append(np.array(info["sensor_readings"]["temperatures"], dtype=float))
-        power.append(float(info["hardware_states"]["step_power_consumption"]))
+        power.append(float(info["hardware_states"]["step_energy_Wh"]))
         if done: break
     return {
         "R": np.array(rewards),

@@ -178,11 +178,13 @@ def smoke_test(env, steps: int = 6, verbose: bool = False):
     # ---------- B) TSV 방향성(+2) ----------
     env.reset()
     # 먼저 off로 한 번 (ΔT 기준선)
-    run_steps(env, off, 1, tsv=[+2, +2, +2, +2])
+    run_steps(env, off, 1, tsv=[0, 0, 0, 0])
     # 그 다음 full로 냉각
     rB, brB, _ = run_steps(env, full, max(2, steps), tsv=[+2, +2, +2, +2])
     lastB = brB[-1]
+    print(lastB)
     pass_B_dir = (lastB.get("R_dir", 0.0) > 0.0)
+    
     # R_track이 초기 대비 개선(증가)했는지 체크
     firstB = brB[0]
     pass_B_track = (lastB.get("R_track", 0.0) >= firstB.get("R_track", 0.0) - 1e-6)

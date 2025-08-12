@@ -34,8 +34,8 @@ class AdvancedSmartACSimulator:
         self.sensors = [SensorModel() for _ in range(num_zones)]
         self.internal_servos = [ServoModel(0, 45) for _ in range(num_zones)]
         self.external_servos = [ServoModel(0, 80) for _ in range(num_zones)]
-        self.small_fans = [FanModel(7000, "small") for _ in range(num_zones)]
-        self.large_fan = FanModel(3300, "large")
+        self.small_fans = [FanModel(max_rpm=7000, fan_type="small", rated_power_W=1.68, pwm_deadband=0.0) for _ in range(num_zones)]
+        self.large_fan = FanModel(max_rpm=3300, fan_type="large", rated_power_W=3.48, pwm_deadband=0.0)
 
         # 액션 스케일링을 위한 범위 정의
         self.action_ranges = {
@@ -66,7 +66,9 @@ class AdvancedSmartACSimulator:
         self.episode_data: Dict[str, list] = {
             'rewards': [],
             'comfort_scores': [],
-            'power_consumption': [],
+            'power_W': [],            # W (순간 전력)
+            'energy_step_Wh': [],      # 이번 스텝 전력사용량(Wh)
+            'energy_total_Wh': [],     # 누적 전력사용량(Wh)
         }
 
         # --- 보상 계산 보조 변수 ---
@@ -74,12 +76,22 @@ class AdvancedSmartACSimulator:
         self.prev_hum   = np.zeros(self.num_zones, dtype=float)  # ΔRH⁺ 계산용
         self.prev_fan_pwm = np.zeros(self.num_zones, dtype=float) # 이 변수는 현재 보상계산에 사용되지 않음
         self.prev_action = np.zeros(self.action_dim, dtype=float)
-        self.prev_power = 0.0
+        self.prev_power_W = 0.0
         self.prev_discomfort = np.zeros(self.num_zones, dtype=float)  # |S_ref - S|/S_ref
         self.occ_weights = np.ones(self.num_zones, dtype=float)       # 재실 가중치(향후 교체)
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
         self.prev_T_eff = np.asarray(target_conditions["temperature"], dtype=float)
         
+        # ---- Energy accounting (Wh) & to-target 보너스용 상태 ----
+        self.total_energy_Wh = 0.0
+        self.energy_to_target_Wh = 0.0
+        self.reached_target = False
+        self.steps_in_target = 0
+        # to-target 보너스 파라미터(파일 내부 기본값; 필요시 config로 이관 가능)
+        self.TARGET_BAND_C = 0.6           # °C, 목표 밴드 폭
+        self.K_TARGET_STABLE = 4           # 밴드 내 연속 스텝 수(보너스 지급 조건)
+        self.K_REF_TO_TARGET = 20          # 목표 도달 기준 스텝수(≈10분@dt=30s)
+
         self.reset()
 
     def update_tsv(self, tsv_list: List[float]):
@@ -150,6 +162,11 @@ class AdvancedSmartACSimulator:
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
         self.prev_T_eff = np.asarray(target_conditions["temperature"], dtype=float)
 
+        state0 = self._get_current_state()
+        scores0 = np.asarray(state0["comfort_scores"]["comfort_scores"], dtype=float)
+        self.prev_discomfort = np.abs(COMFORT_REF - scores0) / COMFORT_REF   # ← 첫 스텝 양의 R_prog 보장
+        self.prev_temps = np.asarray(state0["temperatures"], dtype=float).copy()
+        self.prev_power_W = 0.0  # 안전하게 초기화
         # 합성 TSV용 개인 성향 바이어스(에피소드마다 리샘플)
         if TSV_SIM["enable"]:
             self.tsv_bias = np.random.normal(0.0, TSV_SIM["bias_std"], self.num_zones)
@@ -157,16 +174,16 @@ class AdvancedSmartACSimulator:
             self.tsv_bias = np.zeros(self.num_zones, dtype=float)
 
         self.time_step = 0
+        self.total_energy_Wh = 0.0
+        self.energy_to_target_Wh = 0.0
+        self.reached_target = False
+        self.steps_in_target = 0
         self.episode_data['rewards'].clear()
         self.episode_data['comfort_scores'].clear()
-        self.episode_data['power_consumption'].clear()
+        self.episode_data['power_W'].clear()
+        self.episode_data['energy_step_Wh'].clear()
+        self.episode_data['energy_total_Wh'].clear()
         self.episode_start_time = time.time()
-
-        state0 = self._get_current_state()
-        scores0 = np.asarray(state0["comfort_scores"]["comfort_scores"], dtype=float)
-        self.prev_discomfort = np.abs(COMFORT_REF - scores0) / COMFORT_REF   # ← 첫 스텝 양의 R_prog 보장
-        self.prev_temps = np.asarray(state0["temperatures"], dtype=float).copy()
-        self.prev_power = 0.0  # 안전하게 초기화
 
         return self._get_state_vector()
 
@@ -265,7 +282,9 @@ class AdvancedSmartACSimulator:
         # 5.5 로깅
         self.episode_data['rewards'].append(reward)
         self.episode_data['comfort_scores'].append(comfort_data['average_comfort'])
-        self.episode_data['power_consumption'].append(hw_states['step_power_consumption'])
+        self.episode_data['power_W'].append(hw_states['step_power_W'])
+        self.episode_data['energy_step_Wh'].append(hw_states.get('step_energy_Wh', 0.0))
+        self.episode_data['energy_total_Wh'].append(hw_states.get('total_energy_Wh', self.total_energy_Wh))
 
         # 5.6 next‑state 준비 (prev_* 업데이트)
         self.prev_temps = np.array(sensor_readings['temperatures'])
@@ -278,7 +297,7 @@ class AdvancedSmartACSimulator:
             'comfort_data': comfort_data,
             'reward_breakdown': reward_breakdown,
             'hardware_states': hw_states,
-            'time_step': self.time_step,
+            'time_step': self.time_step
         }
         return self._get_state_vector(), reward, done, info
 
@@ -313,7 +332,8 @@ class AdvancedSmartACSimulator:
             # 이전 스텝의 팬 유량을 기반으로 가중 평균된 흡기 온도를 계산합니다.
             intake_temp = float(np.dot(self.physics_sim.jet.last_Q_intake, self.physics_sim.T) / (self.physics_sim.jet.last_Q_intake.sum() + 1e-9))
         
-        total_power_consumption = 0.0
+        total_power_W = 0.0           # 이번 스텝 순간 전력 합계(W)
+        step_energy_Wh = 0.0          # 이번 스텝 전력사용량(Wh)
 
         for i in range(self.num_zones):
             self.internal_servos[i].set_angle(action_dict['internal_servo_angles'][i])
@@ -326,11 +346,19 @@ class AdvancedSmartACSimulator:
             rpm = self.small_fans[i].set_pwm(action_dict['small_fan_pwm'][i])
             fan_state = self.small_fans[i].update(rpm, self.dt)
             small_fan_states.append(fan_state)
-            total_power_consumption += fan_state['power_consumption']
+            p = float(fan_state.get('power_W',
+                                    fan_state.get('power_consumption', 0.0)))
+            e = float(fan_state.get('energy_Wh_increment', p * self.dt / 3600.0))
+            total_power_W += p
+            step_energy_Wh += e
 
         rpm_large = self.large_fan.set_pwm(action_dict['large_fan_pwm'])
         large_fan_state = self.large_fan.update(rpm_large, self.dt)
-        total_power_consumption += large_fan_state['power_consumption']
+        pL = float(large_fan_state.get('power_W',
+                                       large_fan_state.get('power_consumption', 0.0)))
+        eL = float(large_fan_state.get('energy_Wh_increment', pL * self.dt / 3600.0))
+        total_power_W += pL
+        step_energy_Wh += eL
 
         peltier_state = self.peltier.update(
             action_dict['peltier_control'],  # control (-1~1)
@@ -340,7 +368,14 @@ class AdvancedSmartACSimulator:
             q_load_from_air=getattr(self.physics_sim, '_last_q_removed', None)  # 이전 step에서 공기에서 제거된 열량
             )       
         
-        total_power_consumption += peltier_state['power_consumption']
+        pP = float(peltier_state.get('power_W',
+                                     peltier_state.get('power_consumption', 0.0)))
+        eP = float(peltier_state.get('energy_Wh_increment', pP * self.dt / 3600.0))
+        total_power_W += pP
+        step_energy_Wh += eP
+
+        # 누적 Wh 갱신
+        self.total_energy_Wh += step_energy_Wh
 
         return {
             'peltier': {0: peltier_state},
@@ -352,7 +387,9 @@ class AdvancedSmartACSimulator:
                 'small_fans': small_fan_states,
                 'large_fan': large_fan_state,
             },
-            'step_power_consumption': total_power_consumption
+            'step_power_W': total_power_W,           # W
+            'step_energy_Wh': step_energy_Wh,        # Wh
+            'total_energy_Wh': self.total_energy_Wh  # Wh
         }
     
     # ----------------------------------------------------------------------
@@ -436,12 +473,21 @@ class AdvancedSmartACSimulator:
         R_fair = -float(np.max(w * d_now))
 
         # ------------------------------
-        # # 2) 에너지 (절대 + 램프 + 피크)  —> 쾌적 게이팅 적용
+        # 2) 에너지 (스텝 Wh) + 전력 램프/피크(W)  —> 쾌적 게이팅 적용
         # ------------------------------
-        P_t = float(hw_states.get("step_power_consumption", 0.0))
-        R_energy = - (P_t / P_REF) \
-                - LAMBDA_RAMP * abs(P_t - self.prev_power) / max(P_REF, 1e-6) \
-                - LAMBDA_PEAK * max(0.0, P_t - P_CAP) / max(P_REF, 1e-6)
+        # config 값 이름은 유지하되, 의미 명확화를 위해 지역 별칭 사용
+        P_REF_W, P_CAP_W = P_REF, P_CAP
+        step_power_W = float(hw_states.get("step_power_W",
+                                           hw_states.get("step_power_consumption", 0.0)))
+        E_step_Wh = float(hw_states.get("step_energy_Wh",
+                           step_power_W * self.dt / 3600.0))
+        E_ref_Wh  = max(P_REF_W * self.dt / 3600.0, 1e-6)
+        # (a) 스텝 에너지 패널티(요금/효율 직결)
+        R_Estep = - (E_step_Wh / E_ref_Wh)
+        # (b) 전력 램프/피크 (수요요금·스위칭 낭비 억제)
+        R_Pramp = - LAMBDA_RAMP * abs(step_power_W - self.prev_power_W) / max(P_REF_W, 1e-6)
+        R_Ppeak = - LAMBDA_PEAK * max(0.0, step_power_W - P_CAP_W) / max(P_REF_W, 1e-6)
+        R_energy = R_Estep + R_Pramp + R_Ppeak
         
         # 게이트: 쾌적이 충분할 때만 에너지 패널티 적용
         if USE_ENERGY_GATE:
@@ -489,6 +535,7 @@ class AdvancedSmartACSimulator:
 
         # ------------------------------
         # 5.5) 목표온도 추적 & TSV-방향성 보상 (TSV 데드밴드/EMA/정규화)
+        #      + 덥을 때 펠티어 가동 정렬 보상 (R_cool_align)
         # ------------------------------
         T_target = np.asarray(target_conditions["temperature"], dtype=float)
         tsv = np.asarray(self.current_tsv, dtype=float)
@@ -508,16 +555,55 @@ class AdvancedSmartACSimulator:
         else:
             T_eff = T_target
 
-
-        # (a) Setpoint Tracking: |T - T_eff| 작을수록 높게 (TSV 가중 평균)
+        # (a) 밴드 정의(다수 항에서 공용)
         band = float(TRACK_BAND)
+
+        # (b) 덥을수록 + 펠티어 사용할수록 보상 (shaping)
+        #     - 팬만 올려 PMV로 버티는 편법을 누르고, 실제 냉각 사용을 유도
+        hot_err = np.clip((temps - T_eff) / max(band, 1e-6), 0.0, None)  # 더운 정도(0~)
+        pelt_u  = (float(action_dict["peltier_control"]) + 1.0) / 2.0     # -1..1 → 0..1
+        R_cool_align = float(np.mean(hot_err)) * pelt_u
+
+        # ------------------------------
+        # 5.6) 공간 배분 정렬 보상 (R_alloc)
+        #      내부 슬롯/소형팬/혼합(외부 슬롯)으로 만든 "실내 유입 유량 분포"를
+        #      "과열(+TSV) 수요 분포"에 맞추면 +보상
+        # ------------------------------
+        # 수요: 과열(냉각 수요) + TSV(재실 불편) 가중
+        need = np.maximum(0.0, temps - T_eff) / max(band, 1e-6)
+        need += float(TRACK_TSV_WEIGHT_SCALE) * np.maximum(0.0, tsv)
+        need *= w  # 재실 가중
+        if need.sum() > 0:
+            need /= need.sum()
+        else:
+            need = np.full_like(need, 1.0/len(need))
+
+        # 실제 배분: 직전 스텝 유량 기록에서 실내로 들어간 비중(q_to_room) 사용
+        q_supply = getattr(self.physics_sim.jet, "last_Q_supply", None)
+        recirc   = getattr(self.physics_sim.jet, "last_recirculation_ratio", None)
+        q_intake = getattr(self.physics_sim.jet, "last_Q_intake", None)
+        if q_supply is not None and recirc is not None and np.sum(q_supply) > 0:
+            q_to_room = q_supply * (1.0 - np.clip(recirc, 0.0, 1.0))
+            if q_to_room.sum() > 0:
+                alloc = q_to_room / q_to_room.sum()
+                # (옵션) 흡기 분포도 약간 반영하여 intake 강화 전략을 함께 유도
+                if q_intake is not None and q_intake.sum() > 0:
+                    alloc = 0.8 * alloc + 0.2 * (q_intake / q_intake.sum())
+                # 유사도: L1 거리 기반 (0~1)  — 가까울수록 1에 근접
+                R_alloc = 1.0 - 0.5 * float(np.abs(alloc - need).sum())
+            else:
+                R_alloc = 0.0
+        else:
+            R_alloc = 0.0
+
+        # (c) Setpoint Tracking: |T - T_eff| 작을수록 높게 (TSV 가중 평균)
         err = np.abs(temps - T_eff) / max(band, 1e-6)
         w = self.occ_weights
         w_track = w * (1.0 + float(TRACK_TSV_WEIGHT_SCALE) * np.abs(tsv))
         w_sum = float(np.sum(w_track)) if float(np.sum(w_track)) > 0 else 1.0
         R_track = 1.0 - float(np.clip(np.sum(w_track * err) / w_sum, 0.0, 1.0))
         
-        # (b) TSV 방향성: TSV>0(덥다)면 ΔT<0, TSV<0(춥다)면 ΔT>0가 좋음 (ΔT 정규화/클립)
+        # (d) TSV 방향성: TSV>0(덥다)면 ΔT<0, TSV<0(춥다)면 ΔT>0가 좋음 (ΔT 정규화/클립)
         delta_T_norm = (temps - self.prev_temps) / max(float(DIR_DT_NORM), 1e-6)
         delta_T_norm = np.clip(delta_T_norm, -1.0, 1.0)
         tsv_sign = np.sign(tsv)  # TSV>0(덥다) → -1, TSV<0(춥다) → +1
@@ -525,9 +611,9 @@ class AdvancedSmartACSimulator:
         # 재실 가중치 평균으로 스케일 안정화
         w_sum_dir = float(np.sum(w)) if float(np.sum(w)) > 0 else 1.0
         R_dir = float(np.sum(w * (- tsv_sign * delta_T_norm)) / w_sum_dir)
-        # -> (b) [반영 안함] TSV 방향성 항은 R_track과 목적 중복 → 제거
+        # NOTE: 방향성 항은 R_track과 목적 중복 → 기본 가중치는 0으로 둡니다.
 
-        # (c) 습도 가드레일(상한 힌지) + 근접 게이트 ΔRH⁺
+        # (e) 습도 가드레일(상한 힌지) + 근접 게이트 ΔRH⁺
         RH_hi = float(HUMIDITY_BAND[1])
         H_up = float(np.mean(np.clip(hum - RH_hi, 0.0, None) / 20.0))
         D_T = float(np.mean(err))                     # 목표 근접도 (0~1)
@@ -547,8 +633,10 @@ class AdvancedSmartACSimulator:
             RW["co2"]       * R_co2    +
             RW["act_delta"] * R_act_delta +
             # RW["act_use"]   * R_act_use +
-            RW.get("track", 0.0) * R_track +     # (NEW)
-            RW.get("dir",   0.0) * R_dir   +     # (NEW)
+            RW.get("track", 1.0) * R_track +        # 주목표: T_eff 추적
+            RW.get("alloc", 0.8) * R_alloc +        # 공간 배분 정렬 (NEW)
+            RW.get("cool_align", 0.2) * R_cool_align+ # 덥을수록 펠티어 가동 보너스 (NEW)
+            RW.get("dir",   0.0) * R_dir   +        # 기본 0 (중복 억제)
             R_safe
         )
 
@@ -557,12 +645,16 @@ class AdvancedSmartACSimulator:
             "R_level":  R_level,
             "R_fair":   R_fair,
             "R_energy": R_energy,
+            "E_step_Wh": E_step_Wh,
+            "E_total_Wh": float(hw_states.get("total_energy_Wh", self.total_energy_Wh)),
             "R_hum":    R_hum,
             "R_co2":    R_co2,
             "R_act_d":  R_act_delta,
             "R_act_u":  R_act_use,
-            "R_track":  R_track,   # (NEW)
-            "R_dir":    R_dir,     # (NEW)
+            "R_track":  R_track,   
+            "R_dir":    R_dir,
+            "R_alloc":  R_alloc,   # 공간 배분 정렬
+            "R_cool_align": R_cool_align,  # 덥을수록 펠티어 정렬
             "R_safety": R_safe,
             "reward":   reward,
             "T_eff":    T_eff.tolist()   # 디버깅을 위해 하이브리드 목표를 노출 (테스트 코드에서 찍어보세요)
@@ -570,7 +662,7 @@ class AdvancedSmartACSimulator:
 
         # --- 상태 업데이트 (다음 step 대비)
         self.prev_discomfort = d_now
-        self.prev_power = P_t
+        self.prev_power_W = step_power_W
         # EMA 누적을 위해 업데이트
         self.prev_T_eff = T_eff.copy()
         # prev_temps는 step()에서 5.6 단계에 갱신됩니다.
