@@ -128,9 +128,10 @@ class AdvancedSmartACSimulator:
         s = max(1e-6, float(TSV_SIM["slope_deg"]))
         cont = 3.0 * np.tanh(hot_excess / s) - 3.0 * np.tanh(cold_excess / s)
         cont = cont + self.tsv_bias + np.random.normal(0.0, float(TSV_SIM["sigma"]), size=self.num_zones)
-        # 가끔 반대로 누름
-        flip = np.random.rand(self.num_zones) < float(TSV_SIM["flip_prob"])
-        cont = np.where(flip, -cont, cont)
+        
+        # 가끔 반대로 누름 --> 일단 사용 안할거임
+        # flip = np.random.rand(self.num_zones) < float(TSV_SIM["flip_prob"])
+        # cont = np.where(flip, -cont, cont)
 
         # 등급화, 말 안 하면 서서히 0으로 감쇠
         cand = np.clip(np.rint(cont), -3.0, 3.0)
@@ -200,8 +201,9 @@ class AdvancedSmartACSimulator:
                 self.physics_sim.T[i], self.physics_sim.H[i],
                 self.physics_sim.CO2[i], self.physics_sim.Dust[i]
             )
-        # prev_temps도 동기화
+        # prev_temps, prev_hum도 동기화
         self.prev_temps = self.physics_sim.T.copy()
+        self.prev_hum   = self.physics_sim.H.copy()
 
 
     # -----------------------

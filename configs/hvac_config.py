@@ -57,7 +57,7 @@ SERVO_EXTERNAL_RANGE = (0, 80)
 #   CLAMP_T_EFF_TO_SAFETY: 안전온도 범위로 T*_eff를 클램프할지 여부
 # ------------------------------------------------------------
 USE_TSV_HYBRID = True          # 보상에서 T*_eff 사용 여부
-K_TSV = 0.7                    # °C/TSV (0.6~0.8 권장) — TSV 반영 강도 ↑
+K_TSV = 0.8                    # °C/TSV (0.6~0.8 권장) — TSV 반영 강도 ↑
 CLAMP_T_EFF_TO_SAFETY = True   # 안전 온도 범위로 클램프
 
 # --- TSV/트래킹 고급 설정 ---
