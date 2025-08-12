@@ -16,7 +16,7 @@ from simulator.environment import AdvancedSmartACSimulator
 NUM_STEPS = 30
 
 # TSV 시나리오: 'hot_all' | 'cold_all' | 'oscillate' | 'zone1_hot' | 'random'
-TSV_SCENARIO = 'hot_all'
+TSV_SCENARIO = 'oscillate'
 TSV_MAG = 2.0  # TSV 절대값 (0~3)
 TSV_CONFIDENCE = 1.0  # (선택) tsv_confidence가 있다면 0~1
 

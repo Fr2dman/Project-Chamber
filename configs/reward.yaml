@@ -1,56 +1,29 @@
-# reward.yaml — reward & tracking/TSV config
-# 이 파일은 hvac_config.py가 있을 경우 '선택적으로' 로드되어
-# 동일한 변수(COMFORT_REF, RW 등)를 오버라이드합니다.
+# configs/reward.yaml
+# hvac_config.py가 자동 로드(동일 폴더 배치 또는 환경변수 REWARD_YAML 지정)
+LEVEL_MODE: threshold
 
-comfort_ref: 85 # 목표 쾌적 점수(0~100)
-comfort_band_delta: 5 # 허버/임계 보정폭(점수)
-humidity_band: [30, 70] # %RH 허용 밴드
-co2_ref: 1000 # ppm 기준
-
-# 전력 정규화 기준(시뮬레이터 단위)
-p_ref: 600
-p_cap: 800
-
-# 보상 레벨 모드: threshold | targeted | maximize
-level_mode: threshold
-
-# TSV 기반 목표 조정 및 추적
-tsv:
-  use_hybrid: true # 보상에서 T_eff 사용
-  k_tsv: 0.7 # °C/TSV (0.6~0.8 권장)
-  deadband: 0.5 # |TSV|<deadband면 이동 없음
-  t_eff_ema_alpha: 0.30 # T_eff EMA 스무딩
-  clamp_to_safety: true # 안전 한계로 클램프
-
-tracking:
-  band: 1.5 # |T - T_eff| 정규화 밴드(°C)
-  tsv_weight_scale: 0.5 # 가중치 (1 + scale*|TSV|)
-
-direction:
-  dt_norm: 0.2 # ΔT 정규화 기준(°C/step)
-
-# 에너지 보상 게이트(쾌적 확보 후에만 에너지 절약 학습)
-energy_gate:
-  enabled: true
-  min_all: 78.0 # 최저 쾌적 점수 임계
-  good_thresh: 85.0 # '좋음' 기준
-  pct_good: 0.80 # good_thresh 이상인 존 비율
-
-# 보상 가중치
-weights:
-  track: 1.0 # 목표 추적 보강
-  alloc: 0.8
-  cool_align: 0.2
-  hum: 0.25
+RW:
+  # ── 핵심 밀도 신호 ──
   prog: 1.0
   level: 0.30
-  fair: 0.30
-  energy: 0.00 # 초기엔 0; 게이트 ON 후 점진 상승 권장
-  co2: 0.00
+  fair: 0.20
+  track: 0.25
+  # ── 환경 제약 ──
+  hum: 0.20
+  co2: 0.15
+  # ── 조작 비용 ──
   act_delta: 0.05
-  act_use: 0.01
-  dir: 0.15 # TSV 방향성 보강
+  act_use: 0.00
+  # ── TSV 보조(택1) ──
+  dir: 0.00
+  cool_align: 0.05
+  # ── 누적 에너지(터미널) ──
+  energy: 0.15
 
-lambdas:
-  ramp: 0.2
-  peak: 0.4
+# 참고: 누적 에너지(터미널) 모드는 hvac_config.py의 ENERGY_MODE="cumulative"로 이미 활성화됨.
+#       이 모드에서는 ENERGY_GATE는 사용되지 않지만, 스키마 호환을 위해 남겨둠.
+USE_ENERGY_GATE: false
+ENERGY_GATE:
+  MIN_ALL: 80.0
+  GOOD_THRESH: 80.0
+  PCT_GOOD: 0.80

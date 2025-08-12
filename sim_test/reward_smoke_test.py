@@ -142,14 +142,23 @@ def smoke_test(env, steps: int = 6, verbose: bool = False):
     # 액션 정의
     off = getattr(env, "off_action", np.full(env.action_dim, -1.0, dtype=np.float32))
     full = off.copy()
-    full[0] = +1.0  # peltier full cool
-    full[9:13] = +1.0  # small fans high
-    full[13] = +1.0    # large fan high
-    # 서보는 중간값(= 액션 0.0 → 실제 중간각)로 두거나, 소폭 기울여도 무방
-    full[1:9] = 0.0
+    full[0] = +1.0         # peltier FULL
+    full[1:5] = +1.0       # internal slots OPEN
+    full[5:9] = +1.0       # external slots OPEN
+    full[9:13] = +1.0      # small fans HIGH
+    full[13] = +1.0        # large fan  HIGH
 
-    # 리셋
+    # 리셋 + 안전 범위 안으로 초기상태 클립(테스트 전용)
     env.reset()
+    try:
+        import configs.hvac_config as hvac_config
+        tmin = float(hvac_config.safety_limits["temperature"]["min"])
+        tmax = float(hvac_config.safety_limits["temperature"]["max"])
+        T = env.physics_sim.T
+        env.physics_sim.T = np.clip(T, tmin + 0.5, tmax - 0.5)
+    except Exception:
+        pass
+
     # baseline 1 step (off)
     _, base_brs, base_info = run_steps(env, off, 1, tsv=[0, 0, 0, 0])
     base = base_brs[-1]
@@ -177,8 +186,15 @@ def smoke_test(env, steps: int = 6, verbose: bool = False):
 
     # ---------- B) TSV 방향성(+2) ----------
     env.reset()
-    # 먼저 off로 한 번 (ΔT 기준선)
-    run_steps(env, off, 1, tsv=[0, 0, 0, 0])
+    try:
+        import configs.hvac_config as hvac_config
+        tmin = float(hvac_config.safety_limits["temperature"]["min"])
+        tmax = float(hvac_config.safety_limits["temperature"]["max"])
+        env.physics_sim.T = np.clip(env.physics_sim.T, tmin + 0.5, tmax - 0.5)
+    except Exception:
+        pass
+    # 먼저 off로 한 번 (ΔT 기준선, TSV도 즉시 +2로 세팅)
+    run_steps(env, off, 1, tsv=[+2, +2, +2, +2])
     # 그 다음 full로 냉각
     rB, brB, _ = run_steps(env, full, max(2, steps), tsv=[+2, +2, +2, +2])
     lastB = brB[-1]
@@ -192,14 +208,21 @@ def smoke_test(env, steps: int = 6, verbose: bool = False):
     report.append(("B1: TSV>0 cooling direction (R_dir>0)", pass_B_dir, lastB))
     report.append(("B2: Tracking improves under TSV", pass_B_track, {"first_R_track": firstB.get("R_track"), "last_R_track": lastB.get("R_track")}))
 
-    # ---------- C) 에너지 패널티 크기 ----------
+    # ---------- C) 에너지(터미널 모드 대응) ----------
     env.reset()
+    try:
+        import configs.hvac_config as hvac_config
+        tmin = float(hvac_config.safety_limits["temperature"]["min"])
+        tmax = float(hvac_config.safety_limits["temperature"]["max"])
+        env.physics_sim.T = np.clip(env.physics_sim.T, tmin + 0.5, tmax - 0.5)
+    except Exception:
+        pass
     _, brC_off, _ = run_steps(env, off, 1, tsv=[0, 0, 0, 0])
     _, brC_full, _ = run_steps(env, full, 1, tsv=[0, 0, 0, 0])
-    R_energy_off = brC_off[-1].get("R_energy", 0.0)
-    R_energy_full = brC_full[-1].get("R_energy", 0.0)
-    pass_C = (abs(R_energy_full) > abs(R_energy_off) + 1e-6)
-    report.append(("C: Energy penalty scales with power", pass_C, {"R_energy_off": R_energy_off, "R_energy_full": R_energy_full}))
+    E_off  = brC_off[-1].get("E_step_Wh", 0.0)
+    E_full = brC_full[-1].get("E_step_Wh", 0.0)
+    pass_C = (E_full > E_off + 1e-6)
+    report.append(("C: Energy draw increases with full power (cumulative mode)", pass_C, {"E_off_Wh": E_off, "E_full_Wh": E_full}))
 
     # ---------- D) 공정성: 특정 존만 냉각 ----------
     env.reset()

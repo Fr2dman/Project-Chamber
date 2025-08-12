@@ -82,16 +82,14 @@ class AdvancedSmartACSimulator:
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
         self.prev_T_eff = np.asarray(target_conditions["temperature"], dtype=float)
         
-        # ---- Energy accounting (Wh) & to-target 보너스용 상태 ----
-        self.total_energy_Wh = 0.0
-        self.energy_to_target_Wh = 0.0
-        self.reached_target = False
-        self.steps_in_target = 0
-        # to-target 보너스 파라미터(파일 내부 기본값; 필요시 config로 이관 가능)
-        self.TARGET_BAND_C = 0.6           # °C, 목표 밴드 폭
-        self.K_TARGET_STABLE = 4           # 밴드 내 연속 스텝 수(보너스 지급 조건)
-        self.K_REF_TO_TARGET = 20          # 목표 도달 기준 스텝수(≈10분@dt=30s)
-
+        # ---- 누적 에너지(목표 재달성까지) 및 터미널 보상 상태 ----
+        self.total_energy_Wh = 0.0         # 전체 누적 Wh (로깅용)
+        self.energy_cum_wh = 0.0           # '추격 구간' 누적 Wh
+        self.energy_reward_given = False   # 이번 성공 이벤트에 대해 보상 지급 여부
+        self.success_streak = 0            # 성공 상태 연속 스텝 수
+        self.deficit_start_deg = 0.0       # 추격 시작 시 평균 ΔT (mean(T - T_eff), 하한 0)
+        self.in_pursuit = True             # 현재 추격 상태 플래그
+ 
         self.reset()
 
     def update_tsv(self, tsv_list: List[float]):
@@ -176,9 +174,13 @@ class AdvancedSmartACSimulator:
 
         self.time_step = 0
         self.total_energy_Wh = 0.0
-        self.energy_to_target_Wh = 0.0
-        self.reached_target = False
-        self.steps_in_target = 0
+        self.energy_cum_wh = 0.0
+        self.energy_reward_given = False
+        self.success_streak = 0
+        self.deficit_start_deg = 0.0
+        self.in_pursuit = True
+
+        # 에피소드 로깅 초기화
         self.episode_data['rewards'].clear()
         self.episode_data['comfort_scores'].clear()
         self.episode_data['power_W'].clear()
@@ -434,8 +436,8 @@ class AdvancedSmartACSimulator:
                     P_REF, P_CAP, RW, LAMBDA_RAMP, LAMBDA_PEAK, safety_limits,
                     USE_TSV_HYBRID, K_TSV, CLAMP_T_EFF_TO_SAFETY,
                     TRACK_BAND, TSV_DEADBAND, TRACK_TSV_WEIGHT_SCALE,
-                    T_EFF_EMA_ALPHA, DIR_DT_NORM,
-                    USE_ENERGY_GATE, ENERGY_GATE, target_conditions
+                    T_EFF_EMA_ALPHA, DIR_DT_NORM, target_conditions,
+                    ENERGY_MODE, ENERGY_STEPS_PER_DEG, ENERGY_MIN_BUDGET_WH, SUCCESS_RULE
                 )
 
         def huber(x, delta):
@@ -475,32 +477,16 @@ class AdvancedSmartACSimulator:
         R_fair = -float(np.max(w * d_now))
 
         # ------------------------------
-        # 2) 에너지 (스텝 Wh) + 전력 램프/피크(W)  —> 쾌적 게이팅 적용
+        # 2) 에너지 — 누적 Wh 기반 터미널(성공 시 1회) 보상
         # ------------------------------
-        # config 값 이름은 유지하되, 의미 명확화를 위해 지역 별칭 사용
-        P_REF_W, P_CAP_W = P_REF, P_CAP
-        step_power_W = float(hw_states.get("step_power_W",
-                                           hw_states.get("step_power_consumption", 0.0)))
-        E_step_Wh = float(hw_states.get("step_energy_Wh",
-                           step_power_W * self.dt / 3600.0))
-        E_ref_Wh  = max(P_REF_W * self.dt / 3600.0, 1e-6)
-        # (a) 스텝 에너지 패널티(요금/효율 직결)
-        R_Estep = - (E_step_Wh / E_ref_Wh)
-        # (b) 전력 램프/피크 (수요요금·스위칭 낭비 억제)
-        R_Pramp = - LAMBDA_RAMP * abs(step_power_W - self.prev_power_W) / max(P_REF_W, 1e-6)
-        R_Ppeak = - LAMBDA_PEAK * max(0.0, step_power_W - P_CAP_W) / max(P_REF_W, 1e-6)
-        R_energy = R_Estep + R_Pramp + R_Ppeak
-        
-        # 게이트: 쾌적이 충분할 때만 에너지 패널티 적용
-        if USE_ENERGY_GATE:
-            scores = np.asarray(comfort_data["comfort_scores"], dtype=float)
-            cond1 = float(np.min(scores)) >= float(ENERGY_GATE["MIN_ALL"])
-            frac_good = float(np.mean(scores >= float(ENERGY_GATE["GOOD_THRESH"])))
-            cond2 = frac_good >= float(ENERGY_GATE["PCT_GOOD"])
-            g_energy = 1.0 if (cond1 or cond2) else 0.0
-            R_energy *= g_energy
-        else:
-            g_energy = 1.0
+        step_power_W = float(hw_states.get("step_power_W", 0.0))
+        E_step_Wh = float(hw_states.get("step_energy_Wh", step_power_W * self.dt / 3600.0))
+        self.total_energy_Wh += 0.0  # total은 _update_hardware에서 이미 누적
+        # 추격 구간에서만 누적
+        if ENERGY_MODE == "cumulative" and self.in_pursuit:
+            self.energy_cum_wh += E_step_Wh
+        R_energy = 0.0  # 스텝 패널티 제거(터미널만 사용)
+
 
         # ------------------------------
         # 3) CO2 제약 (완화형 패널티) - 습도는 따로
@@ -536,8 +522,8 @@ class AdvancedSmartACSimulator:
         R_safe = -5.0 if (temp_violation or hum_violation) else 0.0
 
         # ------------------------------
-        # 5.5) 목표온도 추적 & TSV-방향성 보상 (TSV 데드밴드/EMA/정규화)
-        #      + 덥을 때 펠티어 가동 정렬 보상 (R_cool_align)
+        # 6) 목표온도 추적 & TSV-방향성 보상 (TSV 데드밴드/EMA/정규화)
+        #      + 더울 때 펠티어 가동 정렬 보상 (R_cool_align)
         # ------------------------------
         T_target = np.asarray(target_conditions["temperature"], dtype=float)
         tsv = np.asarray(self.current_tsv, dtype=float)
@@ -557,46 +543,23 @@ class AdvancedSmartACSimulator:
         else:
             T_eff = T_target
 
+
+        # ------------------------------
+        # 7) 기타 보상 항목 계산
+        #      - R_cool_align: 더울수록 펠티어 사용 정렬 보상
+        #      - R_track: 목표 온도 추적 보상 (TSV 가중 평균)
+        #      - R_dir: TSV 방향성 보상 (ΔT 정규화/클립)
+        #      - R_hum: 습도 상한 힌지 + 근접 게이트 ΔRH⁺
+        # ------------------------------
+
         # (a) 밴드 정의(다수 항에서 공용)
         band = float(TRACK_BAND)
 
-        # (b) 덥을수록 + 펠티어 사용할수록 보상 (shaping)
+        # (b) 더울수록 + 펠티어 사용할수록 보상 (shaping)
         #     - 팬만 올려 PMV로 버티는 편법을 누르고, 실제 냉각 사용을 유도
         hot_err = np.clip((temps - T_eff) / max(band, 1e-6), 0.0, None)  # 더운 정도(0~)
         pelt_u  = (float(action_dict["peltier_control"]) + 1.0) / 2.0     # -1..1 → 0..1
         R_cool_align = float(np.mean(hot_err)) * pelt_u
-
-        # ------------------------------
-        # 5.6) 공간 배분 정렬 보상 (R_alloc)
-        #      내부 슬롯/소형팬/혼합(외부 슬롯)으로 만든 "실내 유입 유량 분포"를
-        #      "과열(+TSV) 수요 분포"에 맞추면 +보상
-        # ------------------------------
-        # 수요: 과열(냉각 수요) + TSV(재실 불편) 가중
-        need = np.maximum(0.0, temps - T_eff) / max(band, 1e-6)
-        need += float(TRACK_TSV_WEIGHT_SCALE) * np.maximum(0.0, tsv)
-        need *= w  # 재실 가중
-        if need.sum() > 0:
-            need /= need.sum()
-        else:
-            need = np.full_like(need, 1.0/len(need))
-
-        # 실제 배분: 직전 스텝 유량 기록에서 실내로 들어간 비중(q_to_room) 사용
-        q_supply = getattr(self.physics_sim.jet, "last_Q_supply", None)
-        recirc   = getattr(self.physics_sim.jet, "last_recirculation_ratio", None)
-        q_intake = getattr(self.physics_sim.jet, "last_Q_intake", None)
-        if q_supply is not None and recirc is not None and np.sum(q_supply) > 0:
-            q_to_room = q_supply * (1.0 - np.clip(recirc, 0.0, 1.0))
-            if q_to_room.sum() > 0:
-                alloc = q_to_room / q_to_room.sum()
-                # (옵션) 흡기 분포도 약간 반영하여 intake 강화 전략을 함께 유도
-                if q_intake is not None and q_intake.sum() > 0:
-                    alloc = 0.8 * alloc + 0.2 * (q_intake / q_intake.sum())
-                # 유사도: L1 거리 기반 (0~1)  — 가까울수록 1에 근접
-                R_alloc = 1.0 - 0.5 * float(np.abs(alloc - need).sum())
-            else:
-                R_alloc = 0.0
-        else:
-            R_alloc = 0.0
 
         # (c) Setpoint Tracking: |T - T_eff| 작을수록 높게 (TSV 가중 평균)
         err = np.abs(temps - T_eff) / max(band, 1e-6)
@@ -623,22 +586,61 @@ class AdvancedSmartACSimulator:
         dRH_pos = float(np.mean(np.clip(hum - self.prev_hum, 0.0, None) / 5.0))
         R_hum = -(H_up + 0.20 * g_h * dRH_pos)       # 음수(벌점)로 정의
 
+
+        # ------------------------------
+        # 5.7) 터미널 보상 트리거(성공/실패 히스테리시스)
+        # ------------------------------
+        if ENERGY_MODE == "cumulative":
+            scores_np = np.asarray(comfort_data["comfort_scores"], dtype=float)
+            avgC = float(np.mean(scores_np)); minC = float(np.min(scores_np))
+            ok = (avgC >= float(SUCCESS_RULE["AVG"])) and (minC >= float(SUCCESS_RULE["MIN_ALL"]))
+            if ok:
+                self.success_streak += 1
+            else:
+                # 성공 깨짐
+                self.success_streak = 0
+                # DROP 이하로 떨어지면 새로운 추격 시작(누적 리셋 & ΔT_start 기록)
+                if minC < float(SUCCESS_RULE["DROP"]):
+                    temps = np.asarray(sensor_readings['temperatures'], dtype=float)
+                    band = max(float(TRACK_BAND), 1e-6)
+                    # 평균 ΔT_start (음수는 0으로)
+                    self.deficit_start_deg = float(max(0.0, np.mean(temps - T_eff)))
+                    self.energy_cum_wh = 0.0
+                    self.energy_reward_given = False
+                    self.in_pursuit = True
+
+            # 성공 상태가 STREAK 이상 유지되었고 아직 보상 미지급이면 1회 지급
+            if (self.success_streak >= int(SUCCESS_RULE["STREAK"])) and (not self.energy_reward_given):
+                step_wh_ref = float(P_REF) * self.dt / 3600.0
+                E_budget = max(float(ENERGY_MIN_BUDGET_WH),
+                               step_wh_ref * float(ENERGY_STEPS_PER_DEG) * max(0.0, self.deficit_start_deg))
+                eff = (E_budget - self.energy_cum_wh) / max(E_budget, 1e-6)   # [-∞,1]
+                R_energy = float(np.clip(eff, -1.0, 1.0))                      # [-1,1]로 클립
+                self.energy_reward_given = True
+                self.in_pursuit = False
+                self.energy_cum_wh = 0.0  # 유지 구간에서는 누적 멈춤
+
         # ------------------------------
         # 6) 가중합
         # ------------------------------
         reward = (
-            # RW["prog"]      * R_prog   +
-            # RW["level"]     * R_level  +
-            # RW["fair"]      * R_fair   +
-            RW["energy"]    * R_energy +
+            # ── 핵심 ──
+            RW["prog"]      * R_prog   +
+            RW["level"]     * R_level  +
+            RW["fair"]      * R_fair   +
+            RW.get("track", 1.0) * R_track +
+            # ── 환경 제약 ──
             RW["hum"]       * R_hum    +
             RW["co2"]       * R_co2    +
+            # ── 조작 비용 ──
             RW["act_delta"] * R_act_delta +
-            # RW["act_use"]   * R_act_use +
-            RW.get("track", 1.0) * R_track +        # 주목표: T_eff 추적
-            RW.get("alloc", 0.8) * R_alloc +        # 공간 배분 정렬 (NEW)
-            RW.get("cool_align", 0.2) * R_cool_align+ # 덥을수록 펠티어 가동 보너스 (NEW)
-            RW.get("dir",   0.0) * R_dir   +        # 기본 0 (중복 억제)
+            # RW["act_use"] * R_act_use +   # 유지하려면 주석 해제
+            # ── TSV 보조(택1) ──
+            RW.get("cool_align", 0.0) * R_cool_align +
+            # RW.get("dir", 0.0) * R_dir +  # 또는 이걸 사용(둘 중 하나만)
+            # ── 누적 에너지(터미널) ──
+            RW["energy"]    * R_energy +
+            # ── 안전 ──
             R_safe
         )
 
@@ -649,13 +651,16 @@ class AdvancedSmartACSimulator:
             "R_energy": R_energy,
             "E_step_Wh": E_step_Wh,
             "E_total_Wh": float(hw_states.get("total_energy_Wh", self.total_energy_Wh)),
+            "E_cum_to_target_Wh": self.energy_cum_wh,
+            "E_budget_Wh": E_budget if ('E_budget' in locals()) else None,
+            "success_streak": self.success_streak,
+            "deficit_start_deg": self.deficit_start_deg,
             "R_hum":    R_hum,
             "R_co2":    R_co2,
             "R_act_d":  R_act_delta,
             "R_act_u":  R_act_use,
             "R_track":  R_track,   
             "R_dir":    R_dir,
-            "R_alloc":  R_alloc,   # 공간 배분 정렬
             "R_cool_align": R_cool_align,  # 덥을수록 펠티어 정렬
             "R_safety": R_safe,
             "reward":   reward,

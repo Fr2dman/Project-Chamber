@@ -7,6 +7,7 @@ from stable_baselines3.common.callbacks import (
     StopTrainingOnNoModelImprovement
 )
 from configs.hvac_config import TRACK_BAND
+import configs.hvac_config as hvac_config
 
 class InfoLogger(BaseCallback):
     def __init__(self, verbose=0):
@@ -20,6 +21,7 @@ class InfoLogger(BaseCallback):
         dtn_list, dtn_abs_list, frac_in_band_list = [], [], []
         comfort_list, power_list = [], []
         rtrack_list, rdir_list = [], []
+        renergy_list, ecum_list, ebud_list, sstreak_list = [], [], [], []
 
         for info in infos:
             sr = info.get("sensor_readings", {})
@@ -40,6 +42,13 @@ class InfoLogger(BaseCallback):
                 power_list.append(float(power))
             if "R_track" in rb: rtrack_list.append(float(rb["R_track"]))
             if "R_dir"   in rb: rdir_list.append(float(rb["R_dir"]))
+            if "R_energy" in rb: renergy_list.append(float(rb["R_energy"]))
+            if "E_cum_to_target_Wh" in rb and rb["E_cum_to_target_Wh"] is not None:
+                ecum_list.append(float(rb["E_cum_to_target_Wh"]))
+            if "E_budget_Wh" in rb and rb["E_budget_Wh"] is not None:
+                ebud_list.append(float(rb["E_budget_Wh"]))
+            if "success_streak" in rb:
+                sstreak_list.append(float(rb["success_streak"]))
 
         # 평균값만 기록
         def _m(x): 
@@ -53,6 +62,11 @@ class InfoLogger(BaseCallback):
             "power/step_watt": _m(power_list),
             "reward/R_track": _m(rtrack_list),
             "reward/R_dir": _m(rdir_list),
+            "reward/R_energy": _m(renergy_list),
+            "energy/E_cum_Wh": _m(ecum_list),
+            "energy/E_budget_Wh": _m(ebud_list),
+            "energy/success_streak": _m(sstreak_list),
+            "rw/act_delta": float(hvac_config.RW.get("act_delta", 0.0)),
         }
         for k, v in kv.items():
             if v is not None:
@@ -87,3 +101,21 @@ def build_callbacks(eval_env, cfg):
     )
 
     return CallbackList([InfoLogger(), checkpoint_cb, eval_cb])
+
+class AnnealRWCallback(BaseCallback):
+    """hvac_config.RW의 특정 키 가중치를 선형으로 점진 조정"""
+    def __init__(self, key: str, start: float, end: float, steps: int):
+        super().__init__(verbose=0)
+        self.key, self.start, self.end, self.steps = key, float(start), float(end), int(steps)
+
+    def _on_training_start(self) -> None:
+        hvac_config.RW[self.key] = self.start
+
+    def _on_step(self) -> bool:
+        t = int(self.model.num_timesteps)
+        if t >= self.steps: 
+            hvac_config.RW[self.key] = self.end
+            return True
+        ratio = t / max(self.steps, 1)
+        hvac_config.RW[self.key] = self.start + (self.end - self.start) * ratio
+        return True

@@ -92,6 +92,35 @@ CO2_REF = 1000.0            # ppm
 P_REF = 600.0               # 평균 전력 정규화 기준
 P_CAP = 800.0               # 피크 억제 캡
 
+LAMBDA_RAMP = 0.2
+LAMBDA_PEAK = 0.4
+
+# --- 에너지 보상 게이팅: 쾌적 확보 후에만 에너지 절약 유도 ---
+USE_ENERGY_GATE = True
+ENERGY_GATE = {
+    "MIN_ALL": 80.0,        # 최저 쾌적 점수 ≥ 80
+    "PCT_GOOD": 0.80,       # 다음 조건 중 하나라도 만족하면 게이트 ON:
+    "GOOD_THRESH": 80.0     #   (i) 최저 ≥ MIN_ALL  or  (ii) ≥GOOD_THRESH 존 비율 ≥ PCT_GOOD
+}
+# NOTE: ENERGY_MODE="cumulative" 에서는 위 게이트는 사용되지 않음
+
+# ------------------------------------------------------------
+# 누적 에너지 기반(터미널 1회) 보상 모드 설정
+#   - ENERGY_MODE="cumulative" 이면 R_energy를
+#     "쾌적 재달성까지 누적 Wh" vs "ΔT_start 기반 예산 Wh"로 산정
+#   - 스텝별 R_energy, 램프/피크 패널티는 계산하지 않음
+# ------------------------------------------------------------
+ENERGY_MODE = "cumulative"        # "cumulative" | "off"
+ENERGY_STEPS_PER_DEG = 6.0        # 1°C 차이를 메우는 데 기준 스텝 수(예: dt=15s면 90초/°C)
+ENERGY_MIN_BUDGET_WH = 15.0       # 예산 하한(너무 작은 예산 방지)
+SUCCESS_RULE = {                   # 쾌적 성공 판정(히스테리시스)
+    "AVG": 85.0,                   # 평균 쾌적 임계
+    "MIN_ALL": 80.0,               # 최저 쾌적 임계
+    "STREAK": 5,                   # 연속 스텝 수(성공 유지)
+    "DROP": 72.0                   # 실패 판정 하한(떨어지면 추격 재개)
+}
+
+
 # R_level 모드: 'targeted' | 'threshold' | 'maximize'
 # targeted : (기존) 목표 85에서 ±이탈을 대칭 벌점(허버)
 # threshold: 85 미만만 벌점(권장)
@@ -100,30 +129,22 @@ LEVEL_MODE = "threshold"
 
 # Reward weights (트래킹/TSV 강조 프로파일; 에너지 게이트로 관리)
 RW = {
-    "track": 1.0,        # T_eff 추적(주목표)
-    "alloc": 0.8,        # 공간 배분 정렬(시나리오2 교정의 핵심)
-    "cool_align": 0.2,   # 덥을수록 펠티어 사용 보너스(팬 편법 억제)
-    "hum": 0.25,         # RH 상한 가드레일 + 근접시 ΔRH+ 억제
-    "energy": 1.0,       # 에너지(게이트 유지)
-    "act_delta": 0.05,   # 제어 스무딩
-    "co2": 0.0,
-    "dir": 0.15,          # 중복 항이긴 함.
-    "prog": 1.0, 
-    "level": 0.30, 
-    "fair": 0.30,
-    "act_use": 0.01
+    # ── 핵심 밀도 신호 ──
+    "prog": 1.0,     # 진행(개선량)
+    "level": 0.30,   # 남은 불쾌도
+    "fair": 0.20,    # 최악 존 억제(너무 크지 않게)
+    "track": 0.25,   # 목표 추적
+    # ── 환경 제약 ──
+    "hum": 0.20, "co2": 0.15,
+    # ── 조작 비용 ──
+    "act_delta": 0.05,  # 액션 변화량(Δ|a|)
+    "act_use": 0.00, # 비활성(중복 방지)
+    # ── TSV 보조(택1) ──
+    "dir": 0.00,         # 기본 OFF (노이즈 방지)
+    "cool_align": 0.05,  # 또는 이걸 소량만(둘 중 하나만 쓰세요)
+    # ── 터미널 에너지 ──
+    "energy": 0.15       # 누적 에너지(터미널) 보상 세기
 }
-LAMBDA_RAMP = 0.2
-LAMBDA_PEAK = 0.4
-
-# --- 에너지 보상 게이팅: 쾌적 확보 후에만 에너지 절약 유도 ---
-USE_ENERGY_GATE = True
-ENERGY_GATE = {
-    "MIN_ALL": 75.0,        # 최저 쾌적 점수 ≥ 75
-    "PCT_GOOD": 0.80,       # 다음 조건 중 하나라도 만족하면 게이트 ON:
-    "GOOD_THRESH": 80.0     #   (i) 최저 ≥ MIN_ALL  or  (ii) ≥GOOD_THRESH 존 비율 ≥ PCT_GOOD
-}
-
 
 # ------------------------------------------------------------
 # 풍속 추정 계수 (v_i ≈ V0 + A_SMALL·(rpm_s/7000) + B_LARGE·(rpm_L/3300)·f(θ_ext))

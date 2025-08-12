@@ -11,6 +11,7 @@ from stable_baselines3.common.utils import set_random_seed
 
 from rl.sb3.make_env import make_env_fn
 from rl.sb3.callbacks import build_callbacks
+import configs.hvac_config as hvac_config
 
 def load_cfg(path: str):
     with open(path, "r", encoding="utf-8") as f:
@@ -52,7 +53,23 @@ def main():
     set_random_seed(cfg["env"]["seed"])
 
     # 환경 파라미터: 필요 시 configs/hvac_config.py에서 dict로 빼와 연결하세요.
-    env_kwargs = dict()  # HVACEnv가 받는 인자에 맞게 필요하면 채우세요.
+    # env_kwargs = dict()  # HVACEnv가 받는 인자에 맞게 필요하면 채우세요.
+    # === 환경 파라미터 로딩 (configs/env.yaml) ===
+    # env.yaml은 "시뮬레이터 인자"만 넣어주세요. (예: num_zones, 초기조건 등)
+    # 상위 설정(seed/n_envs/episode_steps)은 sb3_sac.yaml에서 관리합니다.
+    try:
+        # 기본 경로: configs/env.yaml
+        env_yaml_path = "configs/env.yaml"
+        if os.path.isfile(env_yaml_path):
+            with open(env_yaml_path, "r", encoding="utf-8") as f:
+                y = yaml.safe_load(f) or {}
+            env_kwargs = (y.get("env") or y) if isinstance(y, dict) else {}
+            # episode.max_steps가 있으면 cfg의 max_episode_steps를 덮어씀
+            ep = y.get("episode") or {}
+            if isinstance(ep, dict) and "max_steps" in ep:
+                cfg["env"]["max_episode_steps"] = int(ep["max_steps"])
+    except Exception as e:
+        print(f"[WARN] env.yaml load failed: {e}. Using default env_kwargs={{}}")
 
     # === 벡터 환경 / 평가 환경 ===
     train_env = build_vec_env(cfg, env_kwargs, for_eval=False)
@@ -86,6 +103,23 @@ def main():
     )
 
     callbacks = build_callbacks(eval_env, cfg)
+
+    # (옵션) act_delta 가중치 점진 인상: 시작→종료를 지정하면 선형 보간
+    # 예: --config 에서 train.act_delta_schedule: {start: 0.02, end: 0.05, steps: 200000}
+    sch = cfg.get("train", {}).get("act_delta_schedule")
+    if sch and isinstance(sch, dict):
+        start = float(sch.get("start", hvac_config.RW.get("act_delta", 0.02)))
+        end   = float(sch.get("end",   start))
+        steps = int(sch.get("steps",   200000))
+        if end != start and steps > 0:
+            from stable_baselines3.common.callbacks import CallbackList
+            from rl.sb3.callbacks import AnnealRWCallback
+            anneal_cb = AnnealRWCallback("act_delta", start, end, steps)
+            # 기존 콜백 리스트에 추가
+            if isinstance(callbacks, CallbackList):
+                callbacks.callbacks.insert(0, anneal_cb)
+            else:
+                callbacks = CallbackList([anneal_cb, callbacks])
 
     # === 학습 ===
     model.learn(
