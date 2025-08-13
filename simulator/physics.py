@@ -12,7 +12,7 @@ RHO_AIR = 1.2            # kg/m³
 DEFAULT_ZONE_VOL = 0.096 # m³ (가로60×세로40×높이40 cm - 4존 기준)
 AMBIENT_TEMP = 30.0      # °C
 AMBIENT_HUM = 70.0       # %RH
-INFIL_FRAC = 1.0e-5 / 3600    # 0.1 % · h⁻¹  →  s⁻¹ : 시연상자의 틈새 유입률
+INFIL_FRAC = 1.0e-3 / 3600    # 0.1 % · h⁻¹  →  s⁻¹ : 시연상자의 틈새 유입률
 EXHAUST_FRAC = 0.05           # 대형팬 공급 유량 중 실외 배기 비율(보수적 가정)
 LATENT_HEAT_VAP = 2.45e6   # J/kg  (물 증발 잠열)
 # ---------------------------------------------------------------------------
@@ -357,16 +357,16 @@ class PhysicsSimulator:
         self.n = num_zones
         self.zone_volumes = np.asarray([DEFAULT_ZONE_VOL] * num_zones if zone_volumes is None else zone_volumes)
         # 상태 변수 초기화
-        # self.T = np.random.uniform(22, 28, size=self.n)
-        # self.H = np.random.uniform(40, 60, size=self.n)
-        # self.CO2 = np.random.uniform(400, 800, size=self.n)
-        # self.Dust = np.random.uniform(0, 10, size=self.n)
+        self.T = np.random.uniform(25, 30, size=self.n)
+        self.H = np.random.uniform(40, 65, size=self.n)
+        self.CO2 = np.random.uniform(400, 800, size=self.n)
+        self.Dust = np.random.uniform(0, 10, size=self.n)
 
         # 초기 상태 (예시)
-        self.T = np.full(self.n, 28.0)  # 초기 온도 (°C)
-        self.H = np.full(self.n, 70.0)  # 초기 습도 (%RH)
-        self.CO2 = np.full(self.n, 400.0)  # 초기 CO2 농도 (ppm)
-        self.Dust = np.full(self.n, 0.0)  # 초기 미세먼지 농도 (μg/m³)
+        # self.T = np.full(self.n, 28.0)  # 초기 온도 (°C)
+        # self.H = np.full(self.n, 70.0)  # 초기 습도 (%RH)
+        # self.CO2 = np.full(self.n, 400.0)  # 초기 CO2 농도 (ppm)
+        # self.Dust = np.full(self.n, 0.0)  # 초기 미세먼지 농도 (μg/m³)
 
         # Ambient conditions
         self.ambient_temp = AMBIENT_TEMP
@@ -421,7 +421,8 @@ class PhysicsSimulator:
         # 1) 이번 step 동안 제거 가능한 냉각 공기 mass (kg)
         e_removed = -thermal_power * dt                                  # J
         denom = CP_AIR * max(intake_temp - cold_side_temp, 1e-3)
-        m_cool_cap = fan_mass_flow * dt                                  # kg
+        f_int = 0.30  # 접촉계수, 0.2~0.4 정도에서 캘리브레이션
+        m_cool_cap = fan_mass_flow * dt * f_int # kg (팬 유량 × 시간)
         m_cool = min(e_removed/denom, m_cool_cap)      # kg
 
         # print(f"펠티어 냉각량: {thermal_power:.2f} W, 제거 가능 질량: {m_cool:.2f} kg")
@@ -436,8 +437,18 @@ class PhysicsSimulator:
         frac = weights/weights.sum()
 
         # --- ADP + CBF 코일 출구 상태 (공냉 소형: approach 2~3 K, CBF 0.7~0.9 권장) ---
-        ADP = cold_side_temp + 3.0
-        CBF = 0.8
+        # 유량 정규화(대략 0~0.04 kg/s 정도를 기준)
+        flow_norm = float(np.clip(fan_mass_flow / 0.04, 0.0, 1.0))
+
+        ADP = cold_side_temp + (3.0 + 2.0*flow_norm)      # 3→5 K
+        CBF = np.clip(0.75 + 0.20*flow_norm, 0.60, 0.95)  # 0.75→0.95
+
+        # 냉측 온도가 0도 이하일 때: 수막 얼음 가정
+        if cold_side_temp < 0.0:
+        # 표면이 영하면 수막이 얼어 열저항↑, 우회↑ (간단 모델)
+            ADP += 1.0                  # approach 1K 가중
+            CBF = min(0.98, CBF + 0.10) # 우회 증가
+
         Ws_adp = ZoneEnergyBalance._Ws(np.array([ADP]))[0]
         T_out = ADP + CBF * (temps - ADP)             # 감열 출구 추정
         # 제습 조건: 입구의 이슬점 > ADP  ⇔  abs_hum > Ws(ADP)

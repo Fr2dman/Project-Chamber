@@ -22,7 +22,7 @@ class PeltierModel:
         internal_resistance: float = 2.1,
         thermal_conductance: float = 1.0,   # W/K (모듈 열전도 K, 0.8~1.3 권장)
         thermal_mass: float = 200.0,
-        heatsink_thermal_resistance: float = 0.20,
+        heatsink_thermal_resistance: float = 0.35,  # K/W (히트싱크 열저항, 0.2~0.5 권장)
         heat_transfer_coeff: float = 10.0,
         tau: float = 30.0,
         supply_voltage: float = 12.0

@@ -1,98 +1,247 @@
+# rl/sb3/wrappers.py
+"""
+Lightweight Gymnasium wrappers used with SB3 for the Smart-AC simulator.
+
+Included:
+- ActionScale: map policy output in [-1, 1] to env.action_space [low, high]
+- ClipAction: hard-clip actions to env bounds (safety)
+- DictFlattenObs: concat Dict observation into a single Box vector (key order fixed)
+- RewardScale: multiply reward by a constant factor
+- RewardClip: clip reward to [min_r, max_r]
+- SafetyEarlyTerminate: if env info signals safety violation, end episode
+- PrevActionObs: append previous action to the observation vector
+
+Notes
+-----
+* Use VecNormalize for running mean/var normalization. These wrappers are complementary.
+* If your env already expects physical-range actions (not [-1,1]), keep ActionScale.
+  If your env already expects normalized actions [-1,1], DO NOT use ActionScale.
+
+Example
+-------
+from rl.sb3.wrappers import (
+    ActionScale, ClipAction, DictFlattenObs, RewardScale, RewardClip,
+    SafetyEarlyTerminate, PrevActionObs
+)
+
+env = AdvancedSmartACSimulator(...)
+env = TimeLimit(env, max_episode_steps=720)
+env = Monitor(env)
+
+# Pick what you need ↓
+env = DictFlattenObs(env, keys=["temps","humidities","tsv","fans_S","fan_L","theta_int","theta_ext"])
+env = ActionScale(env)          # only if policy outputs in [-1,1] and env expects physical ranges
+env = ClipAction(env)
+env = RewardScale(env, scale=1.0)
+env = RewardClip(env, min_r=-5.0, max_r=5.0)
+env = SafetyEarlyTerminate(env, info_flag="safety_violation")
+env = PrevActionObs(env)        # optional: improves stability in control tasks
+"""
+
+from __future__ import annotations
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
 import numpy as np
 import gymnasium as gym
-from gymnasium.spaces import Box
-from simulator.environment import AdvancedSmartACSimulator
+from gymnasium import spaces
 
-class HVACEnv(gym.Env):
-    """SB3 학습용 Gymnasium 래퍼"""
-    def __init__(self, **sim_kwargs):
-        super().__init__()
-        # 초기조건/외기조건 override는 따로 보관
-        init_T = sim_kwargs.pop("init_temperatures", None)
-        init_H = sim_kwargs.pop("init_humidities", None)
-        amb_T  = sim_kwargs.pop("ambient_temp", None)
-        amb_H  = sim_kwargs.pop("ambient_hum", None)
 
-        self._init_override = (init_T, init_H)
-        self._ambient_override = (amb_T, amb_H)
+# -----------------------------
+# Action wrappers
+# -----------------------------
+class ActionScale(gym.ActionWrapper):
+    """
+    Map actions from [-1, 1] to env.action_space.low/high.
 
-        self.sim = AdvancedSmartACSimulator(**sim_kwargs)
+    a_env = low + (a_policy + 1) * 0.5 * (high - low)
+    """
+    def __init__(self, env: gym.Env, low: Optional[np.ndarray] = None, high: Optional[np.ndarray] = None):
+        super().__init__(env)
+        assert isinstance(self.action_space, spaces.Box), "ActionScale requires Box action_space"
+        self._low = self.action_space.low if low is None else np.asarray(low, dtype=np.float32)
+        self._high = self.action_space.high if high is None else np.asarray(high, dtype=np.float32)
+        assert self._low.shape == self._high.shape, "low/high shape mismatch"
+        # policy sees normalized space
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=self._low.shape, dtype=np.float32)
 
-        # 관측/행동 공간 정의
-        obs0 = self.sim.reset()                     # env.reset()이 obs만 반환
-        self.observation_space = Box(
-            low=-np.inf, high=np.inf, shape=obs0.shape, dtype=np.float32
-        )
-        # action = [-1,1] 정규화 14차원 (펠티어1 + 내부서보4 + 외부서보4 + 소형팬4 + 대형팬1)
-        self.action_space = Box(low=-1.0, high=1.0, shape=(14,), dtype=np.float32)
+    def action(self, action: np.ndarray) -> np.ndarray:
+        action = np.asarray(action, dtype=np.float32)
+        action = np.clip(action, -1.0, 1.0)
+        scaled = self._low + (action + 1.0) * 0.5 * (self._high - self._low)
+        return scaled
 
-    def reset(self, *, seed=None, options=None):
-        if seed is not None:
-            np.random.seed(seed)
-        obs = self.sim.reset().astype(np.float32, copy=False)
-        # 생성 직후 1회 환경 override 적용
-        amb_T, amb_H = self._ambient_override
-        if amb_T is not None: self.sim.physics_sim.ambient_temp = float(amb_T)
-        if amb_H is not None: self.sim.physics_sim.ambient_hum  = float(amb_H)
-        init_T, init_H = self._init_override
-        if init_T is not None and init_H is not None:
-            self.sim.set_initial_state(list(init_T), list(init_H))
-        return obs, {}
+
+class ClipAction(gym.ActionWrapper):
+    """Hard-clip actions to environment's action_space bounds."""
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        assert isinstance(self.action_space, spaces.Box), "ClipAction requires Box action_space"
+
+    def action(self, action: np.ndarray) -> np.ndarray:
+        low, high = self.env.action_space.low, self.env.action_space.high
+        return np.clip(action, low, high)
+
+
+# -----------------------------
+# Observation wrappers
+# -----------------------------
+class DictFlattenObs(gym.ObservationWrapper):
+    """
+    Concatenate Dict observations into a single 1D Box vector.
+
+    Parameters
+    ----------
+    keys : list[str] | None
+        Order of keys to concatenate. If None, uses sorted(dict.keys()) to fix order.
+    dtype : np.dtype
+        Output dtype (default float32).
+    """
+    def __init__(self, env: gym.Env, keys: Optional[Sequence[str]] = None, dtype=np.float32):
+        super().__init__(env)
+        assert isinstance(env.observation_space, (spaces.Dict, spaces.Box)), \
+            "DictFlattenObs expects Dict or Box observation_space"
+
+        self.dtype = dtype
+        if isinstance(env.observation_space, spaces.Box):
+            # Nothing to do; passthrough
+            self._is_passthrough = True
+            self.observation_space = spaces.Box(
+                low=-np.inf, high=np.inf, shape=env.observation_space.shape, dtype=dtype
+            )
+            self._keys: List[str] = []
+            return
+
+        self._is_passthrough = False
+        obs_space: spaces.Dict = env.observation_space
+        all_keys = list(obs_space.spaces.keys())
+        self._keys = list(keys) if keys is not None else sorted(all_keys)
+
+        lows: List[np.ndarray] = []
+        highs: List[np.ndarray] = []
+        for k in self._keys:
+            space_k = obs_space.spaces[k]
+            assert isinstance(space_k, spaces.Box), f"Key '{k}' must be Box in DictFlattenObs"
+            lows.append(space_k.low.flatten())
+            highs.append(space_k.high.flatten())
+
+        low = np.concatenate(lows, axis=0).astype(dtype)
+        high = np.concatenate(highs, axis=0).astype(dtype)
+        self.observation_space = spaces.Box(low=low, high=high, dtype=dtype)
+
+    def observation(self, observation: Any) -> np.ndarray:
+        if self._is_passthrough:
+            return np.asarray(observation, dtype=self.dtype)
+        parts: List[np.ndarray] = []
+        for k in self._keys:
+            v = np.asarray(observation[k], dtype=self.dtype).reshape(-1)
+            parts.append(v)
+        return np.concatenate(parts, axis=0)
+
+
+class PrevActionObs(gym.Wrapper):
+    """
+    Append previous action to the observation vector (Box→Box).
+
+    * Works when observation is a 1D Box (use DictFlattenObs beforehand if needed).
+    * Adds zeros on the first step after reset.
+
+    new_obs = concat([obs, prev_action])
+    """
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        assert isinstance(env.observation_space, spaces.Box), "PrevActionObs requires Box observation"
+        assert len(env.observation_space.shape) == 1, "PrevActionObs expects 1D Box observation"
+
+        self._prev_action = np.zeros(self.action_space.shape, dtype=np.float32)
+
+        low = np.concatenate([
+            np.asarray(env.observation_space.low, dtype=np.float32),
+            np.full(self.action_space.shape, -np.inf, dtype=np.float32)
+        ])
+        high = np.concatenate([
+            np.asarray(env.observation_space.high, dtype=np.float32),
+            np.full(self.action_space.shape,  np.inf, dtype=np.float32)
+        ])
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self._prev_action = np.zeros(self.action_space.shape, dtype=np.float32)
+        return self._augment(obs), info
 
     def step(self, action):
-        obs, reward, done, info = self.sim.step(np.asarray(action, dtype=np.float32))
-        obs = obs.astype(np.float32, copy=False)
-        terminated = bool(done)                     # 내부 종료 신호
-        truncated = False                           # 타임리밋은 외부 TimeLimit 래퍼가 처리
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs_aug = self._augment(obs)
+        self._prev_action = np.asarray(action, dtype=np.float32)
+        return obs_aug, reward, terminated, truncated, info
+
+    def _augment(self, obs: np.ndarray) -> np.ndarray:
+        obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+        return np.concatenate([obs, self._prev_action.reshape(-1)], axis=0)
+
+
+# -----------------------------
+# Reward wrappers
+# -----------------------------
+class RewardScale(gym.RewardWrapper):
+    """Multiply rewards by a constant."""
+    def __init__(self, env: gym.Env, scale: float = 1.0):
+        super().__init__(env)
+        self.scale = float(scale)
+
+    def reward(self, reward: float) -> float:
+        return reward * self.scale
+
+
+class RewardClip(gym.RewardWrapper):
+    """Clip rewards to [min_r, max_r]."""
+    def __init__(self, env: gym.Env, min_r: float = -10.0, max_r: float = 10.0):
+        super().__init__(env)
+        assert min_r < max_r
+        self.min_r = float(min_r)
+        self.max_r = float(max_r)
+
+    def reward(self, reward: float) -> float:
+        return float(np.clip(reward, self.min_r, self.max_r))
+
+
+# -----------------------------
+# Safety wrapper
+# -----------------------------
+class SafetyEarlyTerminate(gym.Wrapper):
+    """
+    If the env reports a safety violation via info[info_flag] == True,
+    convert it into an early termination (terminated=True). Optionally,
+    apply an extra penalty.
+
+    Parameters
+    ----------
+    info_flag : str
+        Key in info dict that signals a safety violation (default: "safety_violation").
+    penalty : float
+        Extra negative reward applied once at termination (default: 0.0).
+    """
+    def __init__(self, env: gym.Env, info_flag: str = "safety_violation", penalty: float = 0.0):
+        super().__init__(env)
+        self.info_flag = info_flag
+        self.penalty = float(penalty)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if bool(info.get(self.info_flag, False)):
+            terminated = True
+            if self.penalty != 0.0:
+                reward = reward - abs(self.penalty)
+            info["safety_early_terminated"] = True
         return obs, reward, terminated, truncated, info
 
-    def render(self): pass
-    def close(self): pass
 
-# --- 혼합 초기조건 랜덤화 래퍼 ---
-class RandomizeInitWrapper(gym.Wrapper):
-    """
-    매 reset마다 초기 온도/습도를 지정한 버킷/범위에서 샘플링해 set_initial_state()로 주입.
-    env_kwargs 예시:
-      reset_randomizer:
-        temp_C:
-          buckets: [[23.0, 26.0], [26.0, 30.0]]
-          probs:   [0.5, 0.5]
-        rh_pct:
-          range: [50.0, 80.0]
-    """
-    def __init__(self, env, reset_randomizer: dict):
-        super().__init__(env)
-        self.cfg = reset_randomizer or {}
-
-    def _sample_val(self, spec: dict):
-        if not isinstance(spec, dict):
-            return None
-        if "buckets" in spec:
-            buckets = spec["buckets"]
-            probs = spec.get("probs", None)
-            idx = np.random.choice(len(buckets), p=probs if probs is not None else None)
-            lo, hi = buckets[idx]
-        else:
-            lo, hi = spec.get("low") or spec.get("range", [None, None])
-            if isinstance(lo, (list, tuple)): lo = lo[0]
-            if isinstance(hi, (list, tuple)): hi = hi[1]
-        return float(np.random.uniform(float(lo), float(hi)))
-
-    def reset(self, *, seed=None, options=None):
-        obs, info = self.env.reset(seed=seed, options=options)
-        try:
-            # 존 개수 추정
-            n = len(self.env.sim.physics_sim.T)
-        except Exception:
-            n = 4
-        t_spec = (self.cfg.get("temp_C") or self.cfg.get("temperature"))
-        h_spec = (self.cfg.get("rh_pct")  or self.cfg.get("humidity"))
-        if t_spec is not None and h_spec is not None:
-            t = [self._sample_val(t_spec) for _ in range(n)]
-            h = [self._sample_val(h_spec) for _ in range(n)]
-            try:
-                self.env.sim.set_initial_state(t, h)
-            except Exception:
-                pass
-        return obs, info
+__all__ = [
+    "ActionScale",
+    "ClipAction",
+    "DictFlattenObs",
+    "RewardScale",
+    "RewardClip",
+    "SafetyEarlyTerminate",
+    "PrevActionObs",
+]
