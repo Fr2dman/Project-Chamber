@@ -122,7 +122,7 @@ requirements.txt                 # 의존성 목록
 - 학습:
 
 ```
-python train_sac.py --algo-config configs/sb3_sac.yaml --env-config configs/env.yaml
+python -m rl.sb3.train_sac_sb3 --config configs/sb3_sac.yaml
 
 ```
 

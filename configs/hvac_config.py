@@ -7,7 +7,8 @@
 
 # ---------------- 기본 공통 ----------------
 NUM_ZONES: int = 4  # 상자 존 개수 – Simulator 생성 시 동일하게 맞춰야 함
-CONTROL_TERM = 10  # 제어 주기 (초) – 시뮬레이터와 일치해야 함
+CONTROL_TERM = 15  # 제어 주기 (초) – 시뮬레이터와 일치해야 함
+DT_SECONDS = CONTROL_TERM  # 외부 모듈에서 시간스텝을 명시적으로 참조하고 싶을 때 사용(옵션)
 
 # ---------------- 존 레이아웃  --------------
 # 사용자가 바꾸고 싶으면 여기만 수정.
@@ -119,7 +120,7 @@ SUCCESS_RULE = {                   # 쾌적 성공 판정(히스테리시스)
     "STREAK": 5,                   # 연속 스텝 수(성공 유지)
     "DROP": 72.0                   # 실패 판정 하한(떨어지면 추격 재개)
 }
-
+ENERGY_MAINT_STEP_COEF = 0.03   # η in R_energy_step = -η·(E_step_Wh/step_wh_ref)
 
 # R_level 모드: 'targeted' | 'threshold' | 'maximize'
 # targeted : (기존) 목표 85에서 ±이탈을 대칭 벌점(허버)

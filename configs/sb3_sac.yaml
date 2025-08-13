@@ -18,11 +18,15 @@ hyperparams:
   use_sde: false
   clip_range: null
   normalize: false # VecNormalize를 env 쪽에서 사용
+  handle_timeout_termination: true
+  optimize_memory_usage: true
 
 # 정책 네트워크
 policy_kwargs:
   net_arch: [256, 256]
   activation_fn: ReLU # (SB3에서 문자열 → ReLU)
+  ortho_init: false
+  log_std_init: -1.0
 
 # 평가/체크포인트
 eval:
@@ -31,6 +35,7 @@ eval:
   deterministic: true
   best_model_save_path: checkpoints/sb3_sac
   log_path: logs/sb3_sac
+  sync_vecnormalize: true
 
 checkpoint:
   save_freq: 50000
@@ -39,4 +44,14 @@ checkpoint:
 
 # 장치/재현성
 device: auto
-seed: 42
+
+env:
+  seed: 42
+  n_envs: 4
+  max_episode_steps: 720
+  vec_norm_obs: true
+  vec_norm_reward: false
+  clip_obs: 10.0
+  sim:
+    num_zones: 4
+  stats_window_size: 10000

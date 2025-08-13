@@ -27,7 +27,7 @@ from typing import Dict
 class BetaStore:
     """존별 β 값을 로드·저장·조회하는 싱글턴 헬퍼 클래스."""
 
-    _path = pathlib.Path("beta_store.json")  # 저장 파일 경로
+    _path = pathlib.Path("simulator/beta_store.json")  # 저장 파일 경로
     _lock = threading.RLock()                # 스레드 동기화용 락
     _data: Dict[str, float] = {}             # zone_id -> β
 

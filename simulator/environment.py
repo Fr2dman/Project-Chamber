@@ -84,11 +84,27 @@ class AdvancedSmartACSimulator:
         
         # ---- 누적 에너지(목표 재달성까지) 및 터미널 보상 상태 ----
         self.total_energy_Wh = 0.0         # 전체 누적 Wh (로깅용)
-        self.energy_cum_wh = 0.0           # '추격 구간' 누적 Wh
-        self.energy_reward_given = False   # 이번 성공 이벤트에 대해 보상 지급 여부
-        self.success_streak = 0            # 성공 상태 연속 스텝 수
-        self.deficit_start_deg = 0.0       # 추격 시작 시 평균 ΔT (mean(T - T_eff), 하한 0)
-        self.in_pursuit = True             # 현재 추격 상태 플래그
+        self.energy_cum_wh = 0.0
+        self.energy_reward_given = False
+        self.success_streak = 0
+        # --- 에너지 보상 arming: 시작부터 쾌적인지 확인 ---
+        from configs.hvac_config import SUCCESS_RULE
+        state0 = self._get_current_state()
+        scores0 = np.asarray(state0["comfort_scores"]["comfort_scores"], dtype=float)
+        avgC0, minC0 = float(np.mean(scores0)), float(np.min(scores0))
+        ok0 = (avgC0 >= float(SUCCESS_RULE["AVG"])) and (minC0 >= float(SUCCESS_RULE["MIN_ALL"]))
+        # 목표 T_eff 기준 초기 ΔT 계산
+        T_target = np.asarray(target_conditions["temperature"], dtype=float)
+        T_eff0   = self._compute_T_eff(T_target)
+        temps0   = np.asarray(state0["temperatures"], dtype=float)
+        if ok0:
+            # 시작부터 성공: 이번 사이클은 비무장(추격 아님)
+            self.in_pursuit = False
+            self.energy_reward_given = True
+            self.deficit_start_deg = 0.0
+        else:
+            self.in_pursuit = True
+            self.deficit_start_deg = float(max(0.0, np.mean(temps0 - T_eff0)))
  
         self.reset()
 
@@ -521,7 +537,10 @@ class AdvancedSmartACSimulator:
         temp_violation = np.any((temps < tmin) | (temps > tmax))
         hum_violation  = np.any((hum   < hmin) | (hum   > hmax))
         # CO2 안전 한계가 필요하면 config에 추가하세요.
-        R_safe = -5.0 if (temp_violation or hum_violation) else 0.0
+        if not hasattr(self, "_safe_cnt"):
+            self._safe_cnt = 0
+        self._safe_cnt = (self._safe_cnt + 1) if (temp_violation or hum_violation) else 0
+        R_safe = -5.0 if self._safe_cnt >= 2 else 0.0
 
         # ------------------------------
         # 6) 목표온도 추적 & TSV-방향성 보상 (TSV 데드밴드/EMA/정규화)
@@ -611,9 +630,16 @@ class AdvancedSmartACSimulator:
                     self.energy_reward_given = False
                     self.in_pursuit = True
 
-            # 성공 상태가 STREAK 이상 유지되었고 아직 보상 미지급이면 1회 지급
-            if (self.success_streak >= int(SUCCESS_RULE["STREAK"])) and (not self.energy_reward_given):
-                step_wh_ref = float(P_REF) * self.dt / 3600.0
+            # (유지 스텝) 성공 유지 중엔 아주 작게 순간 Wh 억제
+            from configs.hvac_config import ENERGY_MAINT_STEP_COEF
+            step_wh_ref = float(P_REF) * self.dt / 3600.0
+            if ok and (not self.in_pursuit):
+                R_energy += - float(ENERGY_MAINT_STEP_COEF) * (E_step_Wh / max(step_wh_ref, 1e-6))
+
+            # (터미널) in_pursuit 상태에서만 1회 지급
+            if (self.in_pursuit
+                and (self.success_streak >= int(SUCCESS_RULE["STREAK"]))
+                and (not self.energy_reward_given)):
                 E_budget = max(float(ENERGY_MIN_BUDGET_WH),
                                step_wh_ref * float(ENERGY_STEPS_PER_DEG) * max(0.0, self.deficit_start_deg))
                 eff = (E_budget - self.energy_cum_wh) / max(E_budget, 1e-6)   # [-∞,1]
@@ -645,7 +671,12 @@ class AdvancedSmartACSimulator:
             # ── 안전 ──
             R_safe
         )
-
+        # 로그: 예산(계획) 값도 함께 노출
+        E_budget_plan = None
+        if ENERGY_MODE == "cumulative" and self.in_pursuit:
+            step_wh_ref = float(P_REF) * self.dt / 3600.0
+            E_budget_plan = max(float(ENERGY_MIN_BUDGET_WH),
+                                step_wh_ref * float(ENERGY_STEPS_PER_DEG) * max(0.0, self.deficit_start_deg))
         breakdown = {
             "R_prog":   R_prog,
             "R_level":  R_level,
@@ -654,7 +685,7 @@ class AdvancedSmartACSimulator:
             "E_step_Wh": E_step_Wh,
             "E_total_Wh": float(hw_states.get("total_energy_Wh", self.total_energy_Wh)),
             "E_cum_to_target_Wh": self.energy_cum_wh,
-            "E_budget_Wh": E_budget if ('E_budget' in locals()) else None,
+            "E_budget_Wh": (E_budget if ('E_budget' in locals()) else E_budget_plan),
             "success_streak": self.success_streak,
             "deficit_start_deg": self.deficit_start_deg,
             "R_hum":    R_hum,
