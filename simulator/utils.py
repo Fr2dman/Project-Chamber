@@ -108,7 +108,7 @@ class ZoneComfortCalculator:
         direction: str = "direct",
         tsv: Optional[float] = None,
         met: float = 1.2,
-        clo: float = 0.6,
+        clo: float = 0.5,
     ) -> ComfortResult:
         # 1) 입력 검증
         try:

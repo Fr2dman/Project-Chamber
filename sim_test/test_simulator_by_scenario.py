@@ -24,7 +24,7 @@ def run_simulation(env: AdvancedSmartACSimulator, fixed_action: np.ndarray, dura
         'T_zone2': env.physics_sim.T[2], 'T_zone3': env.physics_sim.T[3],
         'H_zone0': env.physics_sim.H[0],
         'T_ambient': env.physics_sim.ambient_temp,
-        'peltier_thermal_power': 0,
+        'peltier_step_power_W': 0,
         'peltier_cold_temp': env.peltier.cold_side_temp,
         'total_power_consumption': 0
     })
@@ -44,7 +44,7 @@ def run_simulation(env: AdvancedSmartACSimulator, fixed_action: np.ndarray, dura
             'T_ambient': env.physics_sim.ambient_temp,
             'peltier_thermal_power': hw_states['peltier'][0]['thermal_power'],
             'peltier_cold_temp': hw_states['peltier'][0]['cold_side_temp'],
-            'total_power_consumption': hw_states['total_power']
+            'total_power_consumption': hw_states['step_energy_Wh'],
         }
         history.append(record)
         

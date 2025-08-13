@@ -12,7 +12,7 @@ from simulator.environment import AdvancedSmartACSimulator
 
 # ===== 설정 =====
 # TSV 시나리오: 한 번의 step에서 주입할 TSV (존 수와 길이 동일)
-TSV_VALUES = [-2.0, -2.0, -3.0, 1.0]   # "춥다" 피드백 (cold_all)
+TSV_VALUES = [+2.0, +2.0, +3.0, +1.0]   # "춥다" 피드백 (cold_all)
 
 # 액션 벡터(14차원, [-1, 1]): [peltier, 4x internal, 4x external, 4x small fans, large fan]
 # 아래는 'max_cool' 예시
@@ -20,7 +20,7 @@ ACTION = np.array([
     0.0,            # Peltier: 최대 냉각
     1.0, 1.0, 1.0, 1.0,     # 내부 슬롯(각도) 크게 열기
     0.5, 0.5, 0.5, 0.5,     # 외부 슬롯(각도) 중간
-    1.0, 1.0, 1.0, 1.0,     # 소형 팬 최대
+    0.5, 0.5, 1.0, 0.5,     # 소형 팬 최대
     1.0                    # 대형 팬 최대
 ], dtype=np.float32)
 

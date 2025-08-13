@@ -106,7 +106,8 @@ class PeltierModel:
             "power_W": power_consumption,                      # W
             "energy_Wh_increment": energy_Wh_inc,              # Wh
             "energy_Wh_total": self.energy_Wh_total,           # Wh
-            "hot_side_temp": self.hot_side_temp
+            "hot_side_temp": self.hot_side_temp,
+            "cold_side_temp": self.cold_side_temp
         }
     
     def calculate_actual_cooling(self, current: float, Tc: float, Th: float) -> float:

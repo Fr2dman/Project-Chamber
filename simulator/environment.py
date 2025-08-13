@@ -454,7 +454,8 @@ class AdvancedSmartACSimulator:
         # ------------------------------
         scores = np.asarray(comfort_data["comfort_scores"], dtype=float)  # 0..100
         w = self.occ_weights                                             # (N,)
-        d_now = np.abs(COMFORT_REF - scores) / COMFORT_REF               # 0..~1  (양측형)
+        d_now = huber(np.clip(COMFORT_REF - scores, 0.0, None),          # 0..~1  (양측형)
+                       COMFORT_BAND_DELTA) / COMFORT_BAND_DELTA
         # 진행(개선량)
         R_prog = float(np.sum(w * (self.prev_discomfort - d_now)))
 

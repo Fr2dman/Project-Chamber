@@ -244,7 +244,7 @@ class HVACSimulatorTester:
         temps = info['sensor_readings']['temperatures']
         humids = info['sensor_readings']['humidities']
         comforts = info['comfort_data']['comfort_scores']
-        power = info['hardware_states']['step_power_consumption']
+        power = info['hardware_states']['total_energy_Wh']
         
         for i in range(self.num_zones):
             self.current_data['temperatures'][i].append(temps[i])
