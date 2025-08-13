@@ -17,7 +17,7 @@ TSV_VALUES = [-2.0, -2.0, -3.0, 1.0]   # "춥다" 피드백 (cold_all)
 # 액션 벡터(14차원, [-1, 1]): [peltier, 4x internal, 4x external, 4x small fans, large fan]
 # 아래는 'max_cool' 예시
 ACTION = np.array([
-    1.0,            # Peltier: 최대 냉각
+    0.0,            # Peltier: 최대 냉각
     1.0, 1.0, 1.0, 1.0,     # 내부 슬롯(각도) 크게 열기
     0.5, 0.5, 0.5, 0.5,     # 외부 슬롯(각도) 중간
     1.0, 1.0, 1.0, 1.0,     # 소형 팬 최대
@@ -136,7 +136,28 @@ def main():
     print(f"total: {reward:.3f} | done: {done}")
     if isinstance(rb, dict):
         # 주요 항목만 보기 좋게 정렬
-        keys = ["R_prog","R_level","R_fair","R_energy","R_hum","R_co2","R_act_d","R_act_u","R_track","R_dir","R_safety"]
+        keys = [
+            "R_prog",
+            "R_level",
+            "R_fair",
+            "R_energy",
+            "E_step_Wh",
+            "E_total_Wh",
+            "E_cum_to_target_Wh",
+            "E_budget_Wh",
+            "success_streak",
+            "deficit_start_deg",
+            "R_hum",
+            "R_co2",
+            "R_act_d",
+            "R_act_u",
+            "R_track",   
+            "R_dir",
+            "R_cool_align",  # 더울수록 펠티어 정렬
+            "R_safety",
+            "reward",
+            "T_eff"
+        ]
         ordered = {k: rb[k] for k in keys if k in rb}
         # 누락된 키도 함께 출력
         for k,v in rb.items():

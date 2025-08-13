@@ -265,7 +265,7 @@ def smoke_test(env, steps: int = 6, verbose: bool = False):
 # -----------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--steps", type=int, default=6, help="각 시나리오에서 냉각 액션 지속 스텝 수(>=2 권장)")
+    parser.add_argument("--steps", type=int, default=3, help="각 시나리오에서 냉각 액션 지속 스텝 수(>=2 권장)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()

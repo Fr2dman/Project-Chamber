@@ -303,6 +303,7 @@ class AdvancedSmartACSimulator:
             'hardware_states': hw_states,
             'time_step': self.time_step
         }
+        
         return self._get_state_vector(), reward, done, info
 
     # ----------------------------------------------------------------------
