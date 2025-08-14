@@ -1,57 +1,34 @@
 # configs/sb3_sac.yaml
-algo: sac
-policy: MlpPolicy
-total_timesteps: 1000000
-
-# SAC 하이퍼파라미터
-hyperparams:
-  learning_rate: 3.0e-4
-  buffer_size: 1000000
-  learning_starts: 20000
-  batch_size: 512
-  gamma: 0.995
-  tau: 0.02
-  train_freq: 1 # (1, "step") 기본 — vec env면 자동으로 nenv 샘플/스텝
-  gradient_steps: 1
-  ent_coef: "auto"
-  target_entropy: "auto"
-  use_sde: false
-  clip_range: null
-  normalize: false # VecNormalize를 env 쪽에서 사용
-  handle_timeout_termination: true
-  optimize_memory_usage: true
-
-# 정책 네트워크
-policy_kwargs:
-  net_arch: [256, 256]
-  activation_fn: ReLU # (SB3에서 문자열 → ReLU)
-  ortho_init: false
-  log_std_init: -1.0
-
-# 평가/체크포인트
-eval:
-  eval_freq: 10000
-  n_eval_episodes: 5
-  deterministic: true
-  best_model_save_path: checkpoints/sb3_sac
-  log_path: logs/sb3_sac
-  sync_vecnormalize: true
-
-checkpoint:
-  save_freq: 50000
-  save_replay_buffer: true
-  save_vecnormalize: true
-
-# 장치/재현성
-device: auto
-
 env:
-  seed: 42
   n_envs: 4
-  max_episode_steps: 720
+  max_episode_steps: 720 # env의 done 기준과 통일
+  seed: 42
   vec_norm_obs: true
   vec_norm_reward: false
-  clip_obs: 10.0
-  sim:
-    num_zones: 4
-  stats_window_size: 10000
+  clip_obs: 5.0
+
+sac:
+  learning_rate: 3.0e-4
+  buffer_size: 500000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.995 # ← 느린 열동역학 반영
+  train_freq: 1
+  gradient_steps: 1
+  learning_starts: 5000
+  ent_coef: "auto_0.1"
+  target_entropy: "auto"
+
+policy:
+  net_arch: [256, 256]
+  activation_fn: "ReLU"
+  log_std_init: -1.0
+  use_sde: false
+
+train:
+  total_timesteps: 1200000 # 1.2M 권장 (수렴 안정)
+  eval_freq: 10000
+  n_eval_episodes: 5
+  save_freq: 50000
+  checkpoint_path: "checkpoints/sb3_sac"
+  tensorboard_log: "logs"

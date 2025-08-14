@@ -786,3 +786,9 @@ class AdvancedSmartACSimulator:
             "ambient_hum": self.physics_sim.ambient_hum,
             "tsv": self.current_tsv.tolist(),
         }
+
+def make_env(*, num_zones: int = 4, **kwargs):
+    """
+    Always return a concrete environment *instance* for SB3.
+    """
+    return AdvancedSmartACSimulator(num_zones=num_zones, **kwargs)
