@@ -3,7 +3,7 @@ import os
 import argparse
 import yaml
 import numpy as np
-from torch import nn
+import torch
 import gymnasium as gym
 from stable_baselines3 import SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize, VecMonitor
@@ -41,11 +41,14 @@ def build_vec_env(cfg, env_kwargs, for_eval=False, obs_rms_source: VecNormalize 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/sb3_sac.yaml")
-    parser.add_argument("--total_timesteps", type=int, default=None)
+    # --run-name 인자를 추가하여 TensorBoard 로그를 구분할 수 있도록 합니다.
+    parser.add_argument("--run-name", type=str, default="sac_run", help="Name for the training run, used for logging.")
+    parser.add_argument("--config", type=str, default="configs/sb3_sac.yaml", help="Path to the algorithm configuration file.")
+    parser.add_argument("--total-timesteps", type=int, default=None, help="Override total timesteps from the config file.")
     args = parser.parse_args()
 
     cfg = load_cfg(args.config)
+    # 명령줄 인자로 total_timesteps를 덮어쓸 수 있게 합니다.
     if args.total_timesteps is not None:
         cfg["train"]["total_timesteps"] = args.total_timesteps
 
@@ -60,9 +63,9 @@ def main():
 
 
     policy_kwargs = dict(
-    net_arch=cfg["policy"]["net_arch"],
-    activation_fn=nn.ReLU,
-    log_std_init=cfg["policy"]["log_std_init"]
+        net_arch=cfg["policy"]["net_arch"],
+        activation_fn=getattr(torch.nn, cfg["policy"].get("activation_fn", "ReLU")),
+        log_std_init=cfg["policy"]["log_std_init"]
     )
 
     lr = float(cfg["sac"]["learning_rate"])   # ← 안전하게 캐스팅
@@ -79,7 +82,8 @@ def main():
         learning_starts=cfg["sac"]["learning_starts"],
         ent_coef=cfg["sac"]["ent_coef"],
         target_entropy=cfg["sac"]["target_entropy"],
-        tensorboard_log=cfg["train"]["tensorboard_log"],
+        # --run-name 인자를 사용하여 로그 경로를 동적으로 설정합니다.
+        tensorboard_log=os.path.join(cfg["train"]["tensorboard_log"], args.run_name),
         policy_kwargs=policy_kwargs,
         verbose=1,
         seed=cfg["env"]["seed"]
