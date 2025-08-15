@@ -9,7 +9,7 @@ from simulator.utils import ZoneComfortCalculator
 from configs.hvac_config import (
     target_conditions, safety_limits, CONTROL_TERM, COMFORT_REF, USE_TSV_HYBRID,
     K_TSV, CLAMP_T_EFF_TO_SAFETY, LEVEL_MODE, AIR_VEL, SERVO_EXTERNAL_RANGE,
-    TRACK_BAND, TSV_DEADBAND, TSV_SIM,T_EFF_EMA_ALPHA
+    TRACK_BAND, TSV_DEADBAND, TSV_SIM, T_EFF_EMA_ALPHA, TARGET_RANDOMIZE
 )
 
 class AdvancedSmartACSimulator:
@@ -28,6 +28,9 @@ class AdvancedSmartACSimulator:
         # 하위 시뮬레이터 구성
         self.physics_sim = PhysicsSimulator(num_zones)
         self.comfort_calcs = [ZoneComfortCalculator(f"ZONE_{i}") for i in range(self.num_zones)]
+        
+        # 에피소드 타겟(존별), reset()에서 샘플링·설정
+        self.T_target = np.asarray(target_conditions["temperature"], dtype=float).copy()
 
         # 하드웨어 모델 (팬, 서보, 펠티어)
         self.peltier = PeltierModel()
@@ -53,7 +56,13 @@ class AdvancedSmartACSimulator:
         # 상태: 4(온도) + 4(습도) + 4(CO2) + 4(미세먼지) + 4(쾌적도) + 4(TSV)
         #      + 4(내부서보) + 4(외부서보) + 5(팬속도) + 2(외부조건) + 4(목표온도)
         #      + 1(평균 ΔT_norm = mean( (T - T_eff)/TRACK_BAND ))
-        self.state_dim = 44
+        # 상태 벡터 길이를 동적으로 계산
+        try:
+            vec0 = self._get_state_vector()
+            self.state_dim = int(len(vec0))
+        except Exception:
+            # (안전) 예전 코드와의 호환을 위해 fallback
+            self.state_dim = 44
 
         # 액션: 1(펠티어) + 4(내부슬롯) + 4(외부슬롯) + 4(소형팬) + 1(대형팬) = 14차원
         self.action_dim = 14
@@ -80,8 +89,8 @@ class AdvancedSmartACSimulator:
         self.prev_discomfort = np.zeros(self.num_zones, dtype=float)  # |S_ref - S|/S_ref
         self.occ_weights = np.ones(self.num_zones, dtype=float)       # 재실 가중치(향후 교체)
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
-        self.prev_T_eff = np.asarray(target_conditions["temperature"], dtype=float)
-        
+        self.prev_T_eff = self.T_target.copy()        
+
         # ---- 누적 에너지(목표 재달성까지) 및 터미널 보상 상태 ----
         self.total_energy_Wh = 0.0         # 전체 누적 Wh (로깅용)
         self.energy_cum_wh = 0.0
@@ -94,8 +103,7 @@ class AdvancedSmartACSimulator:
         avgC0, minC0 = float(np.mean(scores0)), float(np.min(scores0))
         ok0 = (avgC0 >= float(SUCCESS_RULE["AVG"])) and (minC0 >= float(SUCCESS_RULE["MIN_ALL"]))
         # 목표 T_eff 기준 초기 ΔT 계산
-        T_target = np.asarray(target_conditions["temperature"], dtype=float)
-        T_eff0   = self._compute_T_eff(T_target)
+        T_eff0   = self._compute_T_eff(self.T_target)
         temps0   = np.asarray(state0["temperatures"], dtype=float)
         if ok0:
             # 시작부터 성공: 이번 사이클은 비무장(추격 아님)
@@ -107,6 +115,18 @@ class AdvancedSmartACSimulator:
             self.deficit_start_deg = float(max(0.0, np.mean(temps0 - T_eff0)))
  
         self.reset()
+
+        # 상태 차원은 실제 벡터 길이에 맞춰 동적으로 산출
+        try:
+            self.state_dim = len(self._get_state_vector())
+        except Exception:
+            self.state_dim = 44  # 호환성 fallback
+
+    # 외부에서 테스트 시 목표온도를 주입할 수 있는 헬퍼
+    def set_target_temperatures(self, temperatures: List[float]) -> None:
+        if len(temperatures) != self.num_zones:
+            raise ValueError(f"temperatures must have length {self.num_zones}")
+        self.T_target = np.asarray(temperatures, dtype=float)
 
     def update_tsv(self, tsv_list: List[float]):
         if len(tsv_list) != self.num_zones:
@@ -158,6 +178,29 @@ class AdvancedSmartACSimulator:
         """환경 초기화: 물리·센서·보조 변수 리셋"""
         self.physics_sim.reset()
 
+        # ── (신규) 에피소드별 목표온도 샘플링 ─────────────────────────
+        if TARGET_RANDOMIZE.get("enable", False):
+            mode = TARGET_RANDOMIZE.get("mode", "uniform")
+            per_zone = TARGET_RANDOMIZE.get("per_zone", True)
+            if mode == "uniform":
+                lo, hi = TARGET_RANDOMIZE.get("uniform_range", (23.0, 27.0))
+                if per_zone:
+                    self.T_target = np.random.uniform(lo, hi, size=self.num_zones)
+                else:
+                    v = float(np.random.uniform(lo, hi))
+                    self.T_target = np.full(self.num_zones, v, dtype=float)
+            else:  # "discrete"
+                pool = TARGET_RANDOMIZE.get("discrete_pool", [23.0,24.0,25.0,26.0,27.0])
+                if per_zone:
+                    self.T_target = np.asarray([np.random.choice(pool) for _ in range(self.num_zones)], dtype=float)
+                else:
+                    v = float(np.random.choice(pool))
+                    self.T_target = np.full(self.num_zones, v, dtype=float)
+        else:
+            # 랜덤화 off → 설정값 그대로
+            self.T_target = np.asarray(target_conditions["temperature"], dtype=float).copy()
+        # ─────────────────────────────────────────────────────────────
+
         # 센서·서보 초기값
         for i in range(self.num_zones):
             self.internal_servos[i].current_angle = 30.0
@@ -175,7 +218,8 @@ class AdvancedSmartACSimulator:
         self.prev_fan_pwm.fill(0)
         self.prev_action = self.off_action.copy()
         self.current_tsv = np.zeros(self.num_zones, dtype=float)
-        self.prev_T_eff = np.asarray(target_conditions["temperature"], dtype=float)
+        # 하이브리드 목표 T_eff의 EMA 시작점을 '현재 에피소드 목표'로 일치
+        self.prev_T_eff = self.T_target.copy()
 
         state0 = self._get_current_state()
         scores0 = np.asarray(state0["comfort_scores"]["comfort_scores"], dtype=float)
@@ -189,12 +233,32 @@ class AdvancedSmartACSimulator:
             self.tsv_bias = np.zeros(self.num_zones, dtype=float)
 
         self.time_step = 0
+
+        # ── 에너지/터미널 보상 상태 초기화 및 시작 상태 arming ──
         self.total_energy_Wh = 0.0
         self.energy_cum_wh = 0.0
-        self.energy_reward_given = False
         self.success_streak = 0
-        self.deficit_start_deg = 0.0
-        self.in_pursuit = True
+
+        # 시작 상태가 성공(AVG/MIN 임계 충족)인지 판정
+        from configs.hvac_config import SUCCESS_RULE
+        ok0 = (float(np.mean(scores0)) >= float(SUCCESS_RULE["AVG"])) and \
+              (float(np.min(scores0))  >= float(SUCCESS_RULE["MIN_ALL"]))
+
+        # 목표 T_eff 기준 초기 ΔT 기록(평균, 음수는 0으로)  ← self.T_target 사용
+        T_eff0   = self._compute_T_eff(self.T_target)
+        temps0   = np.asarray(state0["temperatures"], dtype=float)
+        self.deficit_start_deg = float(max(0.0, np.mean(temps0 - T_eff0)))
+
+        if ok0:
+            # 시작부터 성공: 이번 에피소드는 비-추격(누적 Wh 비적용, 터미널 보상 비활성)
+            self.in_pursuit = False
+            self.energy_reward_given = True
+            self.deficit_start_deg = 0.0
+        else:
+            # 시작부터 미달: 추격 시작(누적 Wh 적용, 터미널 보상 대기)
+            self.in_pursuit = True
+            self.energy_reward_given = False
+ 
 
         # 에피소드 로깅 초기화
         self.episode_data['rewards'].clear()
@@ -283,9 +347,8 @@ class AdvancedSmartACSimulator:
         )
         sensor_readings = self._read_sensors(physics_state)
 
-        # (NEW) 현재 온도 기반 TSV 합성(쾌적도/보상 계산 전에)
-        T_target = np.asarray(target_conditions["temperature"], dtype=float)
-        T_eff_for_tsv = self._compute_T_eff(T_target)  # mode="hybrid" 대비
+        # 현재 온도 기반 TSV 합성(쾌적도/보상 계산 전에)
+        T_eff_for_tsv = self._compute_T_eff(self.T_target)  # 하이브리드 모드 대비
         temps = np.asarray(sensor_readings['temperatures'], dtype=float)
         self._update_tsv_threshold(temps=temps, T_eff=T_eff_for_tsv)
 
@@ -367,16 +430,14 @@ class AdvancedSmartACSimulator:
             rpm = self.small_fans[i].set_pwm(action_dict['small_fan_pwm'][i])
             fan_state = self.small_fans[i].update(rpm, self.dt)
             small_fan_states.append(fan_state)
-            p = float(fan_state.get('power_W',
-                                    fan_state.get('power_consumption', 0.0)))
+            p = float(fan_state.get('power_W', 0.0))
             e = float(fan_state.get('energy_Wh_increment', p * self.dt / 3600.0))
             total_power_W += p
             step_energy_Wh += e
 
         rpm_large = self.large_fan.set_pwm(action_dict['large_fan_pwm'])
         large_fan_state = self.large_fan.update(rpm_large, self.dt)
-        pL = float(large_fan_state.get('power_W',
-                                       large_fan_state.get('power_consumption', 0.0)))
+        pL = float(large_fan_state.get('power_W', 0.0))
         eL = float(large_fan_state.get('energy_Wh_increment', pL * self.dt / 3600.0))
         total_power_W += pL
         step_energy_Wh += eL
@@ -389,8 +450,7 @@ class AdvancedSmartACSimulator:
             q_load_from_air=getattr(self.physics_sim, '_last_q_removed', None)  # 이전 step에서 공기에서 제거된 열량
             )       
         
-        pP = float(peltier_state.get('power_W',
-                                     peltier_state.get('power_consumption', 0.0)))
+        pP = float(peltier_state.get('power_W', 0.0))
         eP = float(peltier_state.get('energy_Wh_increment', pP * self.dt / 3600.0))
         total_power_W += pP
         step_energy_Wh += eP
@@ -450,12 +510,14 @@ class AdvancedSmartACSimulator:
                         hw_states: Dict, action_dict: Dict, prev_action_raw: np.ndarray):
         from configs.hvac_config import (
                     COMFORT_REF, COMFORT_BAND_DELTA, HUMIDITY_BAND, CO2_REF,
-                    P_REF, P_CAP, RW, LAMBDA_RAMP, LAMBDA_PEAK, safety_limits,
+                    P_REF, RW, safety_limits,
                     USE_TSV_HYBRID, K_TSV, CLAMP_T_EFF_TO_SAFETY,
                     TRACK_BAND, TSV_DEADBAND, TRACK_TSV_WEIGHT_SCALE,
                     T_EFF_EMA_ALPHA, DIR_DT_NORM, target_conditions,
-                    ENERGY_MODE, ENERGY_STEPS_PER_DEG, ENERGY_MIN_BUDGET_WH, SUCCESS_RULE
-                )
+                    ENERGY_MODE, ENERGY_STEPS_PER_DEG, 
+                    ENERGY_MAINT_STEP_COEF, ENERGY_MIN_BUDGET_WH, SUCCESS_RULE,
+                    ENERGY_PURSUIT_STEP_COEF
+        )
 
         def huber(x, delta):
             ax = np.abs(x)
@@ -546,7 +608,8 @@ class AdvancedSmartACSimulator:
         # 6) 목표온도 추적 & TSV-방향성 보상 (TSV 데드밴드/EMA/정규화)
         #      + 더울 때 펠티어 가동 정렬 보상 (R_cool_align)
         # ------------------------------
-        T_target = np.asarray(target_conditions["temperature"], dtype=float)
+        # 에피소드/외부 주입으로 갱신된 목표를 일관 사용
+        T_target = self.T_target.copy()
         tsv = np.asarray(self.current_tsv, dtype=float)
 
         if USE_TSV_HYBRID:
@@ -631,10 +694,12 @@ class AdvancedSmartACSimulator:
                     self.in_pursuit = True
 
             # (유지 스텝) 성공 유지 중엔 아주 작게 순간 Wh 억제
-            from configs.hvac_config import ENERGY_MAINT_STEP_COEF
             step_wh_ref = float(P_REF) * self.dt / 3600.0
             if ok and (not self.in_pursuit):
                 R_energy += - float(ENERGY_MAINT_STEP_COEF) * (E_step_Wh / max(step_wh_ref, 1e-6))
+            # (추격 스텝) 추격 중에도 소량의 순간 Wh 억제
+            if self.in_pursuit:
+                R_energy += - float(ENERGY_PURSUIT_STEP_COEF) * (E_step_Wh / max(step_wh_ref, 1e-6))
 
             # (터미널) in_pursuit 상태에서만 1회 지급
             if (self.in_pursuit
@@ -664,8 +729,8 @@ class AdvancedSmartACSimulator:
             RW["act_delta"] * R_act_delta +
             # RW["act_use"] * R_act_use +   # 유지하려면 주석 해제
             # ── TSV 보조(택1) ──
-            RW.get("cool_align", 0.0) * R_cool_align +
-            # RW.get("dir", 0.0) * R_dir +  # 또는 이걸 사용(둘 중 하나만)
+            RW.get("cool_align", 0.05) * R_cool_align +
+            RW.get("dir", 0.03) * R_dir +  # 또는 이걸 사용
             # ── 누적 에너지(터미널) ──
             RW["energy"]    * R_energy +
             # ── 안전 ──
@@ -694,7 +759,7 @@ class AdvancedSmartACSimulator:
             "R_act_u":  R_act_use,
             "R_track":  R_track,   
             "R_dir":    R_dir,
-            "R_cool_align": R_cool_align,  # 덥을수록 펠티어 정렬
+            "R_cool_align": R_cool_align,  # 더울수록 펠티어 정렬
             "R_safety": R_safe,
             "reward":   reward,
             "T_eff":    T_eff.tolist()   # 디버깅을 위해 하이브리드 목표를 노출 (테스트 코드에서 찍어보세요)
@@ -751,22 +816,24 @@ class AdvancedSmartACSimulator:
         state += [x / 3 for x in self.current_tsv]
 
         # --- 평균 ΔT_norm = mean( (T - T_eff)/TRACK_BAND )
-        T_target = np.asarray(target_conditions["temperature"], dtype=float)
-        T_eff = self._compute_T_eff(T_target)
+        T_eff = self._compute_T_eff(self.T_target)
         temps = np.asarray(sensor_readings['temperatures'], dtype=float)
         band = max(float(TRACK_BAND), 1e-6)
         deltaT_norm_mean = float(np.mean((temps - T_eff) / band))
         state.append(deltaT_norm_mean)
 
+        # --- 존별 ΔT_norm (정밀 추적 피처)
+        state += list((temps - T_eff) / band)
+        # --- T_eff 자체도 노출(°C → 대략 [-1,1])
+        state += [ (t - 15.0) / 20.0 for t in T_eff ]
+        # --- 목표온도(°C → 대략 [-1,1] 범위) ---
+        state += [ (t - 15.0) / 20.0 for t in self.T_target ]
+
         # --- 하드웨어 상태
-        # --- NEW: 목표온도(°C → 대략 [-1,1] 범위) ---
-        state += [ (t - 15.0) / 20.0 for t in target_conditions["temperature"] ]
         state += [servo.current_angle / 45 for servo in self.internal_servos]
         state += [servo.current_angle / 80 for servo in self.external_servos]
         state += [fan.current_rpm / 7000 for fan in self.small_fans]
         state.append(self.large_fan.current_rpm / 3300)
-        state.append((self.physics_sim.ambient_temp - 15) / 20)
-        state.append(self.physics_sim.ambient_hum / 100)
 
         return np.array(state, dtype=np.float32)
     

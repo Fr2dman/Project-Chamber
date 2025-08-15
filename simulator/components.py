@@ -22,7 +22,7 @@ class PeltierModel:
         internal_resistance: float = 2.1,
         thermal_conductance: float = 1.0,   # W/K (모듈 열전도 K, 0.8~1.3 권장)
         thermal_mass: float = 200.0,
-        heatsink_thermal_resistance: float = 0.35,  # K/W (히트싱크 열저항, 0.2~0.5 권장)
+        heatsink_thermal_resistance: float = 0.35,  # K/W (히트싱크 열저항, 0.25~0.5 권장)
         heat_transfer_coeff: float = 10.0,
         tau: float = 30.0,
         supply_voltage: float = 12.0
@@ -141,7 +141,7 @@ class FanModel:
         self.current_rpm = 0.0
         self.target_pwm = 0.0
 
-        # 정격전력 기본값: 소형(40mm)≈0.84W, 대형(120mm)≈3.48W
+        # 정격전력 기본값: 소형(40mm)≈0.84(한 방향당 2개이므로 1.68적용)W, 대형(120mm)≈3.48W
         self.rated_power_W = rated_power_W if rated_power_W is not None else (1.68 if fan_type == "small" else 3.48)
         self.pwm_deadband = pwm_deadband
         self.power_exponent = power_exponent

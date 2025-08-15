@@ -356,11 +356,20 @@ class PhysicsSimulator:
     def __init__(self, num_zones: int = 4, zone_volumes: Optional[Sequence[float]] = None):
         self.n = num_zones
         self.zone_volumes = np.asarray([DEFAULT_ZONE_VOL] * num_zones if zone_volumes is None else zone_volumes)
-        # 상태 변수 초기화
-        self.T = np.random.uniform(25, 30, size=self.n)
-        self.H = np.random.uniform(40, 65, size=self.n)
-        self.CO2 = np.random.uniform(400, 800, size=self.n)
-        self.Dust = np.random.uniform(0, 10, size=self.n)
+        # 상태 변수 초기화 (영역별 차등을 두어 초기화)
+        # 1. 기준(평균) 값을 먼저 뽑고, 각 영역에 편차를 더해 다양성을 보장합니다.
+        base_temp = np.random.uniform(23, 27)
+        self.T = np.clip(base_temp + np.random.uniform(-3, 3, size=self.n), 21, 30)
+
+        base_hum = np.random.uniform(40, 60)
+        self.H = np.clip(base_hum + np.random.uniform(-20, 20, size=self.n), 20, 70)
+
+        base_co2 = np.random.uniform(500, 600)
+        self.CO2 = np.clip(base_co2 + np.random.uniform(-200, 200, size=self.n), 400, 800)
+
+        base_dust = np.random.uniform(2, 5)
+        self.Dust = np.clip(base_dust + np.random.uniform(-3, 5, size=self.n), 0, 10)
+
 
         # 초기 상태 (예시)
         # self.T = np.full(self.n, 28.0)  # 초기 온도 (°C)

@@ -4,18 +4,18 @@ LEVEL_MODE: threshold
 
 RW:
   # ── 핵심 밀도 신호 ──
-  prog: 1.0
-  level: 0.30
+  prog: 0.8
+  level: 0.35
   fair: 0.20
-  track: 0.25
+  track: 0.30
   # ── 환경 제약 ──
   hum: 0.20
   co2: 0.15
   # ── 조작 비용 ──
   act_delta: 0.05
   act_use: 0.00
-  # ── TSV 보조(택1) ──
-  dir: 0.00
+  # ── TSV 보조 ──
+  dir: 0.03
   cool_align: 0.05
   # ── 누적 에너지(터미널) ──
   energy: 0.15

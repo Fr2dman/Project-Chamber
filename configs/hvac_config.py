@@ -30,6 +30,17 @@ target_conditions = {
     "comfort_threshold": COMFORT_THRESHOLD,
 }
 
+# 학습 시 에피소드별 목표 온도 랜덤화(도메인 랜덤라이제이션)
+# - enable=True 로 두면 reset()마다 목표온도를 샘플링하여 self.T_target 으로 사용
+# - per_zone=True 면 존별로 서로 다른 목표를 샘플링
+TARGET_RANDOMIZE = {
+    "enable": True,
+    "per_zone": True,
+    "mode": "uniform",                 # "uniform" | "discrete"
+    "uniform_range": (23.0, 27.0),     # °C
+    "discrete_pool": [23.0, 24.0, 25.0, 26.0, 27.0]
+}
+
 # ------------- 안전 한계 ----------------
 TEMP_LOWER, TEMP_UPPER = 20.0, 30.0  # °C
 RH_LOWER,   RH_UPPER   = 25.0, 90.0  # %
@@ -71,14 +82,14 @@ DIR_DT_NORM = 0.2              # 방향성 보조항 ΔT 정규화 기준(°C/st
 # ── 합성 TSV(온도 임계 기반) ─────────────────────────────
 TSV_SIM = dict(
     enable=True,          # 학습 때만 True, 실전은 False
-    mode="absolute",      # "absolute" | "hybrid" (T_eff 기준)
+    mode="hybrid",      # "absolute" | "hybrid" (T_eff 기준)
     hot_thr=27.0,         # 이 온도↑에서 "더워요" 발생 확률↑
-    cold_thr=23.0,        # 이 온도↓에서 "추워요" 발생 확률↑
-    p_base=0.15,          # 기본 발생 확률
-    p_k=0.25,             # (온도초과 °C)당 확률 증가량
+    cold_thr=24.0,        # 이 온도↓에서 "추워요" 발생 확률↑
+    p_base=0.20,          # 기본 발생 확률
+    p_k=0.5,             # (온도초과 °C)당 확률 증가량
     slope_deg=1.2,        # tanh 스케일(몇 도에서 강한 TSV가 나오게 할지)
-    sigma=0.35,           # TSV 등급 노이즈(연속값→라운드 전)
-    flip_prob=0.03,       # 가끔 반대로 누르는 오표기 확률
+    sigma=0.20,           # TSV 등급 노이즈(연속값→라운드 전)
+    flip_prob=0.01,       # 가끔 반대로 누르는 오표기 확률
     decay=0.90,           # 피드백 없을 때 0으로 감쇠
     bias_std=0.6          # 존/사람 성향 바이어스 표준편차
 )
@@ -90,8 +101,8 @@ HUMIDITY_BAND = (30.0, 70.0)
 CO2_REF = 1000.0            # ppm
 
 # Energy refs
-P_REF = 600.0               # 평균 전력 정규화 기준
-P_CAP = 800.0               # 피크 억제 캡
+P_REF = 80.0               # 평균 전력 정규화 기준
+P_CAP = 120.0               # 피크 억제 캡
 
 LAMBDA_RAMP = 0.2
 LAMBDA_PEAK = 0.4
@@ -112,8 +123,8 @@ ENERGY_GATE = {
 #   - 스텝별 R_energy, 램프/피크 패널티는 계산하지 않음
 # ------------------------------------------------------------
 ENERGY_MODE = "cumulative"        # "cumulative" | "off"
-ENERGY_STEPS_PER_DEG = 6.0        # 1°C 차이를 메우는 데 기준 스텝 수(예: dt=15s면 90초/°C)
-ENERGY_MIN_BUDGET_WH = 15.0       # 예산 하한(너무 작은 예산 방지)
+ENERGY_STEPS_PER_DEG = 4.0        # 1°C 차이를 메우는 데 기준 스텝 수(예: dt=15s면 90초/°C)
+ENERGY_MIN_BUDGET_WH = 4.0       # 예산 하한(너무 작은 예산 방지)
 SUCCESS_RULE = {                   # 쾌적 성공 판정(히스테리시스)
     "AVG": 85.0,                   # 평균 쾌적 임계
     "MIN_ALL": 80.0,               # 최저 쾌적 임계
@@ -121,6 +132,7 @@ SUCCESS_RULE = {                   # 쾌적 성공 판정(히스테리시스)
     "DROP": 72.0                   # 실패 판정 하한(떨어지면 추격 재개)
 }
 ENERGY_MAINT_STEP_COEF = 0.03   # η in R_energy_step = -η·(E_step_Wh/step_wh_ref)
+ENERGY_PURSUIT_STEP_COEF = 0.015 # 추격 구간에서도 스텝 Wh에 아주 작게 패널티
 
 # R_level 모드: 'targeted' | 'threshold' | 'maximize'
 # targeted : (기존) 목표 85에서 ±이탈을 대칭 벌점(허버)
@@ -131,20 +143,20 @@ LEVEL_MODE = "threshold"
 # Reward weights (트래킹/TSV 강조 프로파일; 에너지 게이트로 관리)
 RW = {
     # ── 핵심 밀도 신호 ──
-    "prog": 1.0,     # 진행(개선량)
-    "level": 0.30,   # 남은 불쾌도
+    "prog": 0.8,     # 진행(개선량)
+    "level": 0.35,   # 남은 불쾌도
     "fair": 0.20,    # 최악 존 억제(너무 크지 않게)
-    "track": 0.25,   # 목표 추적
+    "track": 0.30,   # 목표 추적
     # ── 환경 제약 ──
     "hum": 0.20, "co2": 0.15,
     # ── 조작 비용 ──
     "act_delta": 0.05,  # 액션 변화량(Δ|a|)
     "act_use": 0.00, # 비활성(중복 방지)
-    # ── TSV 보조(택1) ──
-    "dir": 0.00,         # 기본 OFF (노이즈 방지)
-    "cool_align": 0.05,  # 또는 이걸 소량만(둘 중 하나만 쓰세요)
+    # ── TSV 보조 ──
+    "dir": 0.03,         # 기본 OFF (노이즈 방지)
+    "cool_align": 0.5,  # 또는 이걸 소량만(둘 중 하나만 쓰세요)
     # ── 터미널 에너지 ──
-    "energy": 0.15       # 누적 에너지(터미널) 보상 세기
+    "energy": 0.20       # 누적 에너지(터미널) 보상 세기
 }
 
 # ------------------------------------------------------------
